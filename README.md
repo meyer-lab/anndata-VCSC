@@ -29,6 +29,11 @@ v * 2.0                            # scalar multiplication
 v.log1p()                          # elementwise log1p
 v @ x                              # matrix-vector product
 v.to_scipy()                       # decompress back to scipy.sparse.csc_array
+
+# Or hold X (and raw.X) directly as a VCSCArray on an AnnData subclass:
+va = vcsc.VCSCAnnData.from_anndata(adata)
+va.write_h5ad("compressed.h5ad")             # read back with VCSCAnnData.read_h5ad
+plain = va.to_anndata()                      # escape hatch back to a normal AnnData
 ```
 
 See `docs/` for full usage and API documentation.

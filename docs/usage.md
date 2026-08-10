@@ -51,3 +51,37 @@ Attach a decompressed result back onto an `AnnData` object as a layer:
 ```python
 vcsc.to_layer(adata, v, key="vcsc_roundtrip")
 ```
+
+## `VCSCAnnData`: X backed directly by a VCSCArray
+
+`vcsc.VCSCAnnData` is an `AnnData` subclass whose `X` (and, separately, `raw_X`) *is* a
+`VCSCArray`/`VCSRArray`, not a scipy array:
+
+```python
+import vcsc
+
+va = vcsc.VCSCAnnData.from_anndata(adata)  # compresses X and raw.X
+va.X       # a VCSCArray
+va.raw_X   # a VCSCArray (kept separately from anndata's own `.raw`)
+
+# Persist -- read back with the matching classmethod, not anndata.read_h5ad/read_zarr
+va.write_h5ad("compressed.h5ad")
+va2 = vcsc.VCSCAnnData.read_h5ad("compressed.h5ad")
+
+va.write_zarr("compressed.zarr")
+va3 = vcsc.VCSCAnnData.read_zarr("compressed.zarr")
+
+# Escape hatch: decompress to a normal, fully-featured AnnData
+plain = va.to_anndata()
+```
+
+Standard `AnnData` validates every array assigned to `X`/`layers`/etc. against a fixed
+allowlist of types, so a plain `AnnData` cannot hold a `VCSCArray` in `X`.
+`VCSCAnnData` works around this by overriding the `X` property; as a consequence,
+operations that need anndata's normal per-element type dispatch on `X` -- slicing into
+views, concatenation, most of the scanpy/anndata ecosystem -- are **not** supported while
+`X` is VCSC/VCSR-backed. Call `.to_anndata()` first if you need those.
+
+`VCSCArray`/`VCSRArray` are also registered with anndata's on-disk IO registry
+directly, so they round-trip through `write_elem`/`read_elem` even when nested inside
+a plain `AnnData`'s `.uns`, independent of `VCSCAnnData`.

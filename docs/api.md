@@ -16,4 +16,9 @@
 .. autofunction:: vcsc.from_anndata
 
 .. autofunction:: vcsc.to_layer
+
+.. autoclass:: vcsc.VCSCAnnData
+   :members:
+   :undoc-members:
+   :show-inheritance:
 ```
