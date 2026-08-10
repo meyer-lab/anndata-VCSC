@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 import anndata as ad
 import pandas as pd
 
-from vcsc import _io  # noqa: F401  (side effect: registers VCSCArray/VCSRArray IO codecs)
+from vcsc import _compression, _io
 from vcsc._base import VCSCArray, VCSRArray, _VCSBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from os import PathLike
 
 __all__ = ["VCSCAnnData"]
@@ -19,6 +21,7 @@ _VCS_TYPES = (VCSCArray, VCSRArray)
 _DF_KEYS = ("obs", "var")
 _MAPPING_KEYS = ("obsm", "varm", "obsp", "varp", "layers", "uns")
 _FIELD_KEYS = (*_DF_KEYS, *_MAPPING_KEYS)
+_STORE_FORMATS = ("vcsc", "ivcsc")
 
 
 def _check_vcs_type(value: Any, name: str) -> None:
@@ -151,31 +154,67 @@ class VCSCAnnData(ad.AnnData):
     # X) or dispatch on the exact Python type of `self` (VCSCAnnData isn't
     # registered as an "anndata"-encoded type, only AnnData is).
 
-    def _write_group(self, g: Any) -> None:
+    def _write_group(
+        self,
+        g: Any,
+        *,
+        format: str = "vcsc",
+        dataset_kwargs: Mapping[str, Any] = MappingProxyType({}),
+    ) -> None:
+        if format not in _STORE_FORMATS:
+            raise ValueError(f"format must be one of {_STORE_FORMATS}, got {format!r}")
+        write_array = ad.io.write_elem if format == "vcsc" else _io.write_ivcs_elem
         if self._vcs_X is not None:
-            ad.io.write_elem(g, "X", self._vcs_X)
+            write_array(g, "X", self._vcs_X, dataset_kwargs=dataset_kwargs)
         if self._vcs_raw_X is not None:
-            ad.io.write_elem(g, "raw_X", self._vcs_raw_X)
+            write_array(g, "raw_X", self._vcs_raw_X, dataset_kwargs=dataset_kwargs)
         for key in _DF_KEYS:
-            ad.io.write_elem(g, key, getattr(self, key))
+            ad.io.write_elem(g, key, getattr(self, key), dataset_kwargs=dataset_kwargs)
         for key in _MAPPING_KEYS:
-            ad.io.write_elem(g, key, dict(getattr(self, key)))
+            ad.io.write_elem(g, key, dict(getattr(self, key)), dataset_kwargs=dataset_kwargs)
         g.attrs["encoding-type"] = "anndata"
         g.attrs["encoding-version"] = "0.1.0"
 
     @classmethod
     def _read_group(cls, g: Any) -> VCSCAnnData:
+        # X/raw_X read back as plain VCSCArray/VCSRArray regardless of whether
+        # they were stored "vcsc" or "ivcsc" -- the registry dispatches on the
+        # encoding-type attr each group was written with, not on how it's read.
         kwargs = {k: ad.io.read_elem(g[k]) for k in _FIELD_KEYS if k in g}
         X = cast("_VCSBase | None", ad.io.read_elem(g["X"]) if "X" in g else None)
         raw_X = cast("_VCSBase | None", ad.io.read_elem(g["raw_X"]) if "raw_X" in g else None)
         return cls(X=X, raw_X=raw_X, **kwargs)
 
-    def write_h5ad(self, filename: str | PathLike[str], **_kwargs: Any) -> None:
-        """Write to ``.h5ad``. Read back with :meth:`read_h5ad`."""
+    def write_h5ad(
+        self,
+        filename: str | PathLike[str],
+        *,
+        format: str = "vcsc",
+        dataset_kwargs: Mapping[str, Any] | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        """Write to ``.h5ad``. Read back with :meth:`read_h5ad`.
+
+        Parameters
+        ----------
+        format
+            ``"vcsc"`` (default) stores ``X``/``raw_X`` with plain int arrays
+            for the minor-axis indices. ``"ivcsc"`` (IVCSC/IVCSR) instead
+            byte-packs them (delta + varint encoding) for a smaller file, at
+            the cost of extra work on write/read. Either way, ``X``/``raw_X``
+            come back from :meth:`read_h5ad` as ordinary VCSCArray/VCSRArray
+            objects -- ``"ivcsc"`` is purely an on-disk storage format.
+        dataset_kwargs
+            Passed to ``h5py.Group.create_dataset`` for every array written.
+            Defaults to Blosc2+LZ4 compression; pass ``{}`` to store
+            uncompressed.
+        """
         import h5py
 
+        if dataset_kwargs is None:
+            dataset_kwargs = _compression.h5_dataset_kwargs()
         with h5py.File(filename, "w") as f:
-            self._write_group(f)
+            self._write_group(f, format=format, dataset_kwargs=dataset_kwargs)
 
     @classmethod
     def read_h5ad(cls, filename: str | PathLike[str]) -> VCSCAnnData:
@@ -185,12 +224,25 @@ class VCSCAnnData(ad.AnnData):
         with h5py.File(filename, "r") as f:
             return cls._read_group(f)
 
-    def write_zarr(self, store: Any, **_kwargs: Any) -> None:
-        """Write to a zarr store. Read back with :meth:`read_zarr`."""
+    def write_zarr(
+        self,
+        store: Any,
+        *,
+        format: str = "vcsc",
+        dataset_kwargs: Mapping[str, Any] | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        """Write to a zarr store. Read back with :meth:`read_zarr`.
+
+        See :meth:`write_h5ad` for ``format``/``dataset_kwargs``; the default
+        compression here is Blosc+LZ4 via ``numcodecs``.
+        """
         import zarr
 
+        if dataset_kwargs is None:
+            dataset_kwargs = _compression.zarr_dataset_kwargs()
         f = zarr.open_group(store, mode="w")
-        self._write_group(f)
+        self._write_group(f, format=format, dataset_kwargs=dataset_kwargs)
 
     @classmethod
     def read_zarr(cls, store: Any) -> VCSCAnnData:

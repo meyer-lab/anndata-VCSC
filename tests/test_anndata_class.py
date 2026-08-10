@@ -108,6 +108,65 @@ def test_zarr_roundtrip(base_adata, dense, tmp_path):
     np.testing.assert_allclose(read_back.raw_X.to_scipy().toarray(), dense)
 
 
+def test_h5ad_ivcsc_roundtrip(base_adata, dense, tmp_path):
+    va = VCSCAnnData.from_anndata(base_adata)
+    path = tmp_path / "test_ivcsc.h5ad"
+    va.write_h5ad(path, format="ivcsc")
+
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        assert f["X"].attrs["encoding-type"] == "ivcsc"
+        assert "packed_indices" in f["X"]
+        assert "indices" not in f["X"]
+
+    read_back = VCSCAnnData.read_h5ad(path)
+    assert isinstance(read_back.X, VCSCArray)
+    assert isinstance(read_back.raw_X, VCSCArray)
+    np.testing.assert_allclose(read_back.X.to_scipy().toarray(), dense)
+    np.testing.assert_allclose(read_back.raw_X.to_scipy().toarray(), dense)
+
+
+def test_zarr_ivcsc_roundtrip(base_adata, dense, tmp_path):
+    va = VCSCAnnData.from_anndata(base_adata, format="csr")
+    path = tmp_path / "test_ivcsr.zarr"
+    va.write_zarr(path, format="ivcsc")
+
+    read_back = VCSCAnnData.read_zarr(path)
+    assert isinstance(read_back.X, VCSRArray)
+    np.testing.assert_allclose(read_back.X.to_scipy().toarray(), dense)
+
+
+def test_write_h5ad_rejects_bad_format(base_adata, tmp_path):
+    va = VCSCAnnData.from_anndata(base_adata)
+    with pytest.raises(ValueError):
+        va.write_h5ad(tmp_path / "bad.h5ad", format="bogus")
+
+
+def test_write_h5ad_default_compression(base_adata, tmp_path):
+    va = VCSCAnnData.from_anndata(base_adata)
+    path = tmp_path / "compressed.h5ad"
+    va.write_h5ad(path)
+
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        # Blosc2 is registered as a dynamically-loaded HDF5 filter, so h5py
+        # doesn't recognize it via `compression` -- check the raw filter id.
+        assert any(int(fid) >= 32000 for fid in f["X"]["values"]._filters)
+
+
+def test_write_h5ad_dataset_kwargs_override(base_adata, tmp_path):
+    va = VCSCAnnData.from_anndata(base_adata)
+    path = tmp_path / "uncompressed.h5ad"
+    va.write_h5ad(path, dataset_kwargs={})
+
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        assert dict(f["X"]["values"]._filters) == {}
+
+
 def test_uns_embedding_roundtrips_via_registry(base_adata, dense, tmp_path):
     """VCSCArray registered as an IO codec also works nested inside uns."""
     v = VCSCArray.from_scipy(sp.csc_array(dense))
