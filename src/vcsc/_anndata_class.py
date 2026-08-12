@@ -207,13 +207,17 @@ class VCSCAnnData(ad.AnnData):
         dataset_kwargs
             Passed to ``h5py.Group.create_dataset`` for every array written.
             Defaults to Blosc2+LZ4 compression; pass ``{}`` to store
-            uncompressed.
+            uncompressed. Either way, compression is only ever applied to
+            numeric arrays -- see :func:`vcsc._compression.numeric_only_compression`.
         """
         import h5py
 
         if dataset_kwargs is None:
             dataset_kwargs = _compression.h5_dataset_kwargs()
-        with h5py.File(filename, "w") as f:
+        with (
+            _compression.numeric_only_compression("h5"),
+            h5py.File(filename, "w") as f,
+        ):
             self._write_group(f, format=format, dataset_kwargs=dataset_kwargs)
 
     @classmethod
@@ -234,15 +238,17 @@ class VCSCAnnData(ad.AnnData):
     ) -> None:
         """Write to a zarr store. Read back with :meth:`read_zarr`.
 
-        See :meth:`write_h5ad` for ``format``/``dataset_kwargs``; the default
-        compression here is Blosc+LZ4 via ``numcodecs``.
+        See :meth:`write_h5ad` for ``format``/``dataset_kwargs`` (including the
+        numeric-only compression behavior); the default compression here is
+        Blosc+LZ4 via ``numcodecs``.
         """
         import zarr
 
         if dataset_kwargs is None:
             dataset_kwargs = _compression.zarr_dataset_kwargs()
-        f = zarr.open_group(store, mode="w")
-        self._write_group(f, format=format, dataset_kwargs=dataset_kwargs)
+        with _compression.numeric_only_compression("zarr"):
+            f = zarr.open_group(store, mode="w")
+            self._write_group(f, format=format, dataset_kwargs=dataset_kwargs)
 
     @classmethod
     def read_zarr(cls, store: Any) -> VCSCAnnData:
