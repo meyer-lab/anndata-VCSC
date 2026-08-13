@@ -1,0 +1,363 @@
+"""Fast filter/normalize loader for IVCSR-stored ``.h5ad`` files.
+
+Mirrors the preprocessing in `parafac2.normalize.prepare_dataset
+<https://github.com/meyer-lab/parafac2/blob/main/parafac2/normalize.py>`_
+(minimum-count cell filtering, minimum-expression gene filtering, per-cell
+read-depth normalization, and a log10 transform) but is written directly
+against the on-disk VCSR/IVCSR layout instead of going through
+:meth:`~vcsc.VCSCAnnData.read_h5ad` + generic ``AnnData`` indexing.
+
+Why this needs its own code path
+---------------------------------
+A VCSR major (row/cell) slice stores each *unique* value once, alongside the
+list of minor-axis (gene) indices that share it -- ``values``/``value_ptr``
+are indexed per unique-value group, not per nonzero. Two consequences drive
+the design here:
+
+- **Cell filtering is (almost) free.** A cell's total count is
+  ``sum(value * group_size for each unique-value group in that row)``, a sum
+  over ``n_unique`` (~46x fewer entries than ``nnz`` on the bundled example
+  dataset) that touches only ``major_ptr``/``values``/``value_ptr``. It needs
+  none of the (compressed, delta+varint-packed) ``indices`` array, so the
+  cell mask can be computed without ever decoding it.
+- **Gene filtering and normalization cannot avoid touching every nonzero.**
+  A gene's total count is a scatter-add keyed by minor-axis index, which
+  means visiting every nonzero -- there's no shortcut analogous to the cell
+  case. So ``indices`` must be decoded (using the parallel decoder in
+  :mod:`vcsc._ivcsc`) before gene filtering can happen, and once decoded the
+  per-cell scale factor differs per row while the per-gene scale factor
+  differs per column, so after both are applied a row's values are no longer
+  mostly-repeated -- the whole point of VCSC/VCSR's deduplication is gone.
+  Normalization is therefore done on a plain CSR array, built once, right
+  after the two masks are known -- via a fused numba pass rather than
+  scipy's generic per-step (row sum, row scale, column sum, column scale,
+  multiply, add, log10) elementwise pipeline, each step of which is another
+  single-threaded full-``nnz`` pass with its own temporary.
+
+The one thing this implementation does *not* do is what
+:func:`parafac2.normalize.prepare_dataset` calls "indexing for subsetting the
+data": ``X[cell_mask, gene_mask]``. That line re-derives a filtered matrix via
+scipy's generic fancy indexing (row selection, then a column selection that
+internally goes through a CSC conversion). Here, row/gene filtering,
+compaction, and column-index remapping happen in one fused parallel pass
+(:func:`_count_kept`/:func:`_fill_kept`) directly on the decoded arrays, so
+the filtered CSR is built once instead of assembled and then re-sliced.
+Gene means (``X.var["means"]``) aren't computed either -- nothing here needs
+them, and computing them is a simple ``X.mean(axis=0)`` for callers that do.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
+
+import numba
+import numpy as np
+from scipy.sparse import csr_array
+
+from vcsc import _ivcsc
+
+if TYPE_CHECKING:
+    from os import PathLike
+
+__all__ = ["load_and_normalize"]
+
+
+class NormalizedData(NamedTuple):
+    """Result of :func:`load_and_normalize`."""
+
+    X: csr_array
+    """Filtered, depth-normalized, log10-transformed count matrix."""
+
+    kept_cells: np.ndarray
+    """Original row indices retained (into the on-disk matrix)."""
+
+    kept_genes: np.ndarray
+    """Original column indices retained (into the on-disk matrix)."""
+
+
+# -- group-level (no-decode) cell totals -------------------------------------
+
+
+def _cell_totals(major_ptr: np.ndarray, values: np.ndarray, value_ptr: np.ndarray) -> np.ndarray:
+    """Per-row total counts, computed without touching ``indices``.
+
+    Each unique-value group of size ``value_ptr[k + 1] - value_ptr[k]``
+    contributes ``values[k] * group_size`` to its row's total -- so this
+    only costs ``O(n_unique)``, not ``O(nnz)``.
+    """
+    n_major = major_ptr.shape[0] - 1
+    group_sizes = np.diff(value_ptr)
+    weighted = values.astype(np.float64) * group_sizes
+    row_of_group = np.repeat(np.arange(n_major, dtype=np.int64), np.diff(major_ptr))
+    return np.bincount(row_of_group, weights=weighted, minlength=n_major)
+
+
+# -- parallel value expansion (values/value_ptr -> per-nonzero data) --------
+
+
+@numba.njit(cache=True, parallel=True)
+def _expand_values(values: np.ndarray, value_ptr: np.ndarray, out: np.ndarray) -> None:
+    n_unique = values.shape[0]
+    for k in numba.prange(n_unique):
+        v = values[k]
+        for p in range(value_ptr[k], value_ptr[k + 1]):
+            out[p] = v
+
+
+def _build_data(values: np.ndarray, value_ptr: np.ndarray, nnz: int) -> np.ndarray:
+    out = np.empty(nnz, dtype=values.dtype)
+    _expand_values(values, value_ptr, out)
+    return out
+
+
+# -- parallel weighted bincount (raw per-gene totals, for gene_mask) --------
+
+
+@numba.njit(cache=True, parallel=True)
+def _weighted_bincount(
+    indices: np.ndarray, data: np.ndarray, n_bins: int, nthreads: int
+) -> np.ndarray:
+    n = indices.shape[0]
+    chunk = (n + nthreads - 1) // nthreads
+    partial = np.zeros((nthreads, n_bins), dtype=np.float64)
+    for t in numba.prange(nthreads):
+        start = t * chunk
+        end = min(n, start + chunk)
+        local = partial[t]
+        for k in range(start, end):
+            local[indices[k]] += data[k]
+    return partial.sum(axis=0)
+
+
+# -- fused row+column filter/compaction --------------------------------------
+
+
+@numba.njit(cache=True, parallel=True)
+def _count_kept(
+    row_indptr: np.ndarray,
+    indices: np.ndarray,
+    gene_mask: np.ndarray,
+    kept_rows: np.ndarray,
+    out_counts: np.ndarray,
+) -> None:
+    for j in numba.prange(kept_rows.shape[0]):
+        r = kept_rows[j]
+        c = 0
+        for k in range(row_indptr[r], row_indptr[r + 1]):
+            if gene_mask[indices[k]]:
+                c += 1
+        out_counts[j] = c
+
+
+@numba.njit(cache=True, parallel=True)
+def _fill_kept(
+    row_indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    gene_remap: np.ndarray,
+    kept_rows: np.ndarray,
+    new_indptr: np.ndarray,
+    out_indices: np.ndarray,
+    out_data: np.ndarray,
+) -> None:
+    for j in numba.prange(kept_rows.shape[0]):
+        r = kept_rows[j]
+        pos = new_indptr[j]
+        for k in range(row_indptr[r], row_indptr[r + 1]):
+            g = gene_remap[indices[k]]
+            if g >= 0:
+                out_indices[pos] = g
+                out_data[pos] = data[k]
+                pos += 1
+
+
+def _filter_and_compact(
+    row_indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    cell_mask: np.ndarray,
+    gene_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    kept_rows = np.nonzero(cell_mask)[0]
+    gene_remap = (np.cumsum(gene_mask) - 1).astype(np.int32)
+    gene_remap[~gene_mask] = -1
+    n_kept_genes = int(gene_mask.sum())
+
+    counts = np.empty(kept_rows.shape[0], dtype=np.int64)
+    _count_kept(row_indptr, indices, gene_mask, kept_rows, counts)
+    new_indptr = np.zeros(kept_rows.shape[0] + 1, dtype=np.int64)
+    np.cumsum(counts, out=new_indptr[1:])
+
+    nnz_filtered = int(new_indptr[-1])
+    out_indices = np.empty(nnz_filtered, dtype=np.int32)
+    out_data = np.empty(nnz_filtered, dtype=np.float32)
+    _fill_kept(row_indptr, indices, data, gene_remap, kept_rows, new_indptr, out_indices, out_data)
+
+    return new_indptr, out_indices, out_data, kept_rows, n_kept_genes
+
+
+# -- fused row-scale / gene-scale / log10 transform --------------------------
+#
+# scipy's route to the same result -- X.sum(axis=1), a np.repeat of the
+# per-row scale over nnz, an in-place divide, X.sum(axis=0), a fancy-index
+# gather of the per-column scale over nnz, another in-place divide, then
+# three more elementwise passes (*1000, +1, log10) -- is ~9 passes over the
+# (still nnz-scale, filtering rarely drops much on real data) array plus two
+# extra full-nnz temporaries (the repeat and the gather). Every one of those
+# passes and temporaries is single-threaded generic numpy code. Fusing the
+# whole tail into three parallel passes over the already-filtered CSR (row
+# sums -> per-column sums of the row-scaled data -> the final transform,
+# each row-parallel with no nnz-sized temporary beyond the output) removes
+# both the redundant passes and the memory pressure from those temporaries.
+
+
+@numba.njit(cache=True, parallel=True)
+def _row_sums(indptr: np.ndarray, data: np.ndarray, out: np.ndarray) -> None:
+    for r in numba.prange(out.shape[0]):
+        s = 0.0
+        for k in range(indptr[r], indptr[r + 1]):
+            s += data[k]
+        out[r] = s
+
+
+@numba.njit(cache=True, parallel=True)
+def _scaled_col_sums(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    row_scale: np.ndarray,
+    n_bins: int,
+    nthreads: int,
+) -> np.ndarray:
+    n_rows = indptr.shape[0] - 1
+    chunk = (n_rows + nthreads - 1) // nthreads
+    partial = np.zeros((nthreads, n_bins), dtype=np.float64)
+    for t in numba.prange(nthreads):
+        start = t * chunk
+        end = min(n_rows, start + chunk)
+        local = partial[t]
+        for r in range(start, end):
+            sc = row_scale[r]
+            for k in range(indptr[r], indptr[r + 1]):
+                local[indices[k]] += data[k] / sc
+    return partial.sum(axis=0)
+
+
+@numba.njit(cache=True, parallel=True)
+def _fused_normalize_transform(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    row_scale: np.ndarray,
+    gene_sums: np.ndarray,
+) -> None:
+    """Overwrites ``data`` in place -- each output only depends on its own input."""
+    n_rows = indptr.shape[0] - 1
+    for r in numba.prange(n_rows):
+        sc = row_scale[r]
+        for k in range(indptr[r], indptr[r + 1]):
+            v = (data[k] / sc) / gene_sums[indices[k]]
+            data[k] = np.log10(np.float32(1.0) + np.float32(1000.0) * v)
+
+
+def _normalize_and_transform(
+    indptr: np.ndarray, indices: np.ndarray, data: np.ndarray, n_genes: int
+) -> np.ndarray:
+    """Depth normalization + log10(1000x + 1), fused, overwriting ``data`` in place."""
+    n_rows = indptr.shape[0] - 1
+    nthreads = numba.get_num_threads()
+
+    counts_per_cell = np.empty(n_rows, dtype=np.float64)
+    _row_sums(indptr, data, counts_per_cell)
+    counts_per_cell /= np.median(counts_per_cell)
+
+    gene_sums = _scaled_col_sums(indptr, indices, data, counts_per_cell, n_genes, nthreads)
+
+    _fused_normalize_transform(indptr, indices, data, counts_per_cell, gene_sums)
+    return data
+
+
+# -- top-level entry point ---------------------------------------------------
+
+
+def load_and_normalize(
+    path: str | PathLike[str],
+    *,
+    min_cell_counts: float = 10.0,
+    gene_threshold: float = 0.0,
+    x_key: str = "X",
+) -> NormalizedData:
+    """Load, filter, and depth-normalize a VCSR/IVCSR-backed ``.h5ad`` file.
+
+    Reproduces ``parafac2.normalize.prepare_dataset``: cells with total
+    counts <= ``min_cell_counts`` and genes with total counts <=
+    ``gene_threshold * n_cells`` (both measured on the raw, unfiltered
+    counts, matching the reference implementation) are dropped; the
+    remaining matrix is row-normalized to the median per-cell depth, then
+    column-normalized by gene sum, then transformed as ``log10(1000x + 1)``.
+
+    Parameters
+    ----------
+    path
+        Path to an ``.h5ad`` file whose ``X`` (or ``layers[x_key]``) was
+        written with ``format="ivcsc"``/``"ivcsr"`` (see
+        :meth:`~vcsc.VCSCAnnData.write_h5ad`).
+    min_cell_counts
+        Cells with total raw counts <= this are dropped.
+    gene_threshold
+        Minimum threshold fraction for gene inclusion, as in
+        ``parafac2.normalize.prepare_dataset``: genes with total raw counts
+        <= ``gene_threshold * n_cells`` are dropped.
+    x_key
+        Top-level h5ad group holding the IVCSR array (``"X"`` by default).
+
+    Returns
+    -------
+    NormalizedData
+        ``X`` (filtered/normalized CSR array), ``kept_cells``, ``kept_genes``
+        (original-index arrays for whatever rows/columns survived
+        filtering).
+    """
+    import h5py
+    import hdf5plugin  # noqa: F401  -- registers the Blosc2 HDF5 filter
+
+    with h5py.File(Path(path), "r") as f:
+        g = f[x_key]
+        shape = tuple(int(s) for s in np.asarray(g.attrs["shape"]).tolist())
+        indices_dtype = np.dtype(g.attrs["indices_dtype"])
+        major_ptr = g["major_ptr"][...]
+        values = g["values"][...]
+        value_ptr = g["value_ptr"][...]
+        packed = g["packed_indices"][...]
+
+    n_cells, n_genes = shape
+
+    # Cell mask: no decode needed.
+    cell_totals = _cell_totals(major_ptr, values, value_ptr)
+    cell_mask = cell_totals > min_cell_counts
+
+    # Everything past this point needs every nonzero visited at least once.
+    # Each array below is only kept alive as long as something still needs
+    # it -- at nnz-billions scale, an un-`del`ed stale reference is a real
+    # multi-GB cost, not housekeeping.
+    indices = _ivcsc.unpack_indices(value_ptr, packed, indices_dtype)
+    del packed
+    data = _build_data(values, value_ptr, indices.shape[0])
+    row_indptr = value_ptr[major_ptr]
+
+    gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
+    gene_mask = gene_totals_raw > (gene_threshold * n_cells)
+
+    new_indptr, out_indices, out_data, kept_rows, n_kept_genes = _filter_and_compact(
+        row_indptr, indices, data, cell_mask, gene_mask
+    )
+    del indices, data, row_indptr
+    kept_genes = np.nonzero(gene_mask)[0]
+
+    normalized = _normalize_and_transform(new_indptr, out_indices, out_data, n_kept_genes)
+    X = csr_array(
+        (normalized, out_indices, new_indptr), shape=(kept_rows.shape[0], n_kept_genes)
+    )
+
+    return NormalizedData(X=X, kept_cells=kept_rows, kept_genes=kept_genes)
