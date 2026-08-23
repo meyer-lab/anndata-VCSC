@@ -125,12 +125,12 @@ def test_metadata_sliced_correctly(tmp_path, rng):
     assert list(result.var["gene_symbol"]) == [f"SYM_{j}" for j in ref_genes]
 
     # Check obsm/varm
-    np.testing.assert_allclose(result.obsm["pca"], obsm["pca"][ref_cells])
-    np.testing.assert_allclose(result.varm["loadings"], varm["loadings"][ref_genes])
+    np.testing.assert_allclose(np.asarray(result.obsm["pca"]), np.asarray(obsm["pca"])[ref_cells])
+    np.testing.assert_allclose(np.asarray(result.varm["loadings"]), np.asarray(varm["loadings"])[ref_genes])
 
     # Check obsp/varp
-    np.testing.assert_allclose(result.obsp["distances"], obsp["distances"][ref_cells][:, ref_cells])
-    np.testing.assert_allclose(result.varp["correlations"], varp["correlations"][ref_genes][:, ref_genes])
+    np.testing.assert_allclose(np.asarray(result.obsp["distances"]), np.asarray(obsp["distances"])[ref_cells][:, ref_cells])
+    np.testing.assert_allclose(np.asarray(result.varp["correlations"]), np.asarray(varp["correlations"])[ref_genes][:, ref_genes])
 
     # Check uns
     assert result.uns == uns
