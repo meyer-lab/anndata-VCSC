@@ -24,6 +24,7 @@ from anndata.compat import H5Group, ZarrGroup
 
 from vcsc import _ivcsc
 from vcsc._base import VCSCArray, VCSRArray, _VCSBase
+from vcsc._ivcs import IVCSCArray, IVCSRArray, _IVCSBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -40,6 +41,9 @@ _ARRAY_KEYS = ("major_ptr", "values", "value_ptr", "indices")
 _SPEC_VERSION = "0.1.0"
 _IVCS_SPEC_VERSION = "0.1.0"
 _IVCS_SPEC_NAMES: dict[type[_VCSBase], str] = {VCSCArray: "ivcsc", VCSRArray: "ivcsr"}
+_PACKED_SPEC_VERSION = "0.2.0"
+_PACKED_SPEC_NAMES: dict[type[_IVCSBase], str] = {IVCSCArray: "ivcsc", IVCSRArray: "ivcsr"}
+_PACKED_CLASSES_BY_NAME: dict[str, type[_IVCSBase]] = {v: k for k, v in _PACKED_SPEC_NAMES.items()}
 
 
 def _write_vcs(
@@ -77,7 +81,7 @@ def _make_read_vcs(cls: type[_VCSBase]):
 def write_ivcs_elem(
     f: GroupStorageType,
     k: str,
-    v: _VCSBase,
+    v: _VCSBase | _IVCSBase,
     *,
     dataset_kwargs: Mapping[str, Any] = MappingProxyType({}),
 ) -> None:
@@ -102,7 +106,7 @@ def write_ivcs_elem(
         ad.io.write_elem(g, name, getattr(v, name), dataset_kwargs=dataset_kwargs)
     packed = _ivcsc.pack_indices(v.value_ptr, v.indices)
     ad.io.write_elem(g, "packed_indices", packed, dataset_kwargs=dataset_kwargs)
-    g.attrs["encoding-type"] = _IVCS_SPEC_NAMES[type(v)]
+    g.attrs["encoding-type"] = "ivcsc" if v._format == "csc" else "ivcsr"
     g.attrs["encoding-version"] = _IVCS_SPEC_VERSION
 
 
@@ -121,6 +125,56 @@ def _make_read_ivcs(cls: type[_VCSBase]):
     return _read
 
 
+def read_ivcs_elem_packed(elem: GroupStorageType, cls: type[_IVCSBase]) -> _IVCSBase:
+    """Read a group written by :func:`write_ivcs_elem` straight into an IVCSCArray/IVCSRArray.
+
+    Unlike ``ad.io.read_elem`` on the same group (which always reconstructs
+    a plain VCSCArray/VCSRArray by decoding ``packed_indices``, see
+    :func:`_make_read_ivcs`), this never decodes -- the packed bytes are
+    copied as-is into the returned array. Used by
+    :func:`~vcsc.load_packed` to load an on-disk IVCSR/IVCSC ``.h5ad``
+    straight into a byte-packed, in-memory form.
+    """
+    shape_vals = [int(s) for s in np.asarray(elem.attrs["shape"]).tolist()]
+    shape = (shape_vals[0], shape_vals[1])
+    major_ptr = cast(np.ndarray, ad.io.read_elem(elem["major_ptr"]))
+    values = cast(np.ndarray, ad.io.read_elem(elem["values"]))
+    value_ptr = cast(np.ndarray, ad.io.read_elem(elem["value_ptr"]))
+    packed = cast(np.ndarray, ad.io.read_elem(elem["packed_indices"]))
+    dtype = np.dtype(elem.attrs["indices_dtype"])
+    return cls(shape, major_ptr, values, value_ptr, packed, dtype)
+
+
+def _write_packed(
+    f: GroupStorageType,
+    k: str,
+    v: _IVCSBase,
+    *,
+    _writer: Writer,
+    dataset_kwargs: Mapping[str, Any] = MappingProxyType({}),
+) -> None:
+    g = f.require_group(k)
+    g.attrs["shape"] = v.shape
+    g.attrs["indices_dtype"] = np.dtype(v.indices_dtype).name
+    for name in ("major_ptr", "values", "value_ptr"):
+        _writer.write_elem(g, name, getattr(v, name), dataset_kwargs=dataset_kwargs)
+    _writer.write_elem(g, "packed_indices", v.packed_indices, dataset_kwargs=dataset_kwargs)
+
+
+def _make_read_packed(cls: type[_IVCSBase]):
+    def _read(elem: GroupStorageType, *, _reader: Reader) -> _IVCSBase:
+        shape_vals = [int(s) for s in np.asarray(elem.attrs["shape"]).tolist()]
+        shape = (shape_vals[0], shape_vals[1])
+        major_ptr = cast(np.ndarray, _reader.read_elem(elem["major_ptr"]))
+        values = cast(np.ndarray, _reader.read_elem(elem["values"]))
+        value_ptr = cast(np.ndarray, _reader.read_elem(elem["value_ptr"]))
+        packed = cast(np.ndarray, _reader.read_elem(elem["packed_indices"]))
+        dtype = np.dtype(elem.attrs["indices_dtype"])
+        return cls(shape, major_ptr, values, value_ptr, packed, dtype)
+
+    return _read
+
+
 def _register() -> None:
     from anndata._io.specs.registry import _REGISTRY, IOSpec
 
@@ -135,6 +189,12 @@ def _register() -> None:
             spec = IOSpec(spec_name, _IVCS_SPEC_VERSION)
             if not _REGISTRY.has_read(store_type, spec, frozenset()):
                 _REGISTRY.register_read(store_type, spec, frozenset())(_make_read_ivcs(cls))
+        for cls, spec_name in _PACKED_SPEC_NAMES.items():
+            spec = IOSpec(spec_name, _PACKED_SPEC_VERSION)
+            if not _REGISTRY.has_write(store_type, cls, frozenset()):
+                _REGISTRY.register_write(store_type, cls, spec)(_write_packed)
+            if not _REGISTRY.has_read(store_type, spec, frozenset()):
+                _REGISTRY.register_read(store_type, spec, frozenset())(_make_read_packed(cls))
 
 
 _register()

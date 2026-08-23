@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vcsc import VCSCAnnData, VCSCArray, VCSRArray
+from vcsc import IVCSRArray, VCSCAnnData, VCSCArray, VCSRArray
 
 
 @pytest.fixture
@@ -208,4 +208,54 @@ def test_raw_x_setter_validation(base_adata, dense):
     new_v = VCSRArray.from_scipy(sp.csr_array(dense))
     va.raw_X = new_v
     assert va.raw_X is new_v
+
+
+def test_getitem_slices_obs_and_var(base_adata, dense):
+    if dense.shape[0] < 3 or dense.shape[1] < 3:
+        pytest.skip("shape too small")
+    va = VCSCAnnData.from_anndata(base_adata, include_raw=False)
+    sub = va[1:3, [0, 2]]
+
+    assert isinstance(sub, VCSCAnnData)
+    assert isinstance(sub.X, VCSCArray)
+    assert sub.shape == (2, 2)
+    np.testing.assert_allclose(sub.X.toarray(), dense[1:3][:, [0, 2]])
+    assert list(sub.obs["grp"]) == list(base_adata.obs["grp"].iloc[1:3])
+    assert list(sub.var["gene"]) == [base_adata.var["gene"].iloc[0], base_adata.var["gene"].iloc[2]]
+
+
+def test_getitem_boolean_mask(base_adata, dense):
+    va = VCSCAnnData.from_anndata(base_adata, include_raw=False)
+    obs_mask = np.zeros(dense.shape[0], dtype=bool)
+    obs_mask[::2] = True
+    sub = va[obs_mask, :]
+    np.testing.assert_allclose(sub.X.toarray(), dense[obs_mask])
+
+
+def test_getitem_subsets_raw_x_and_returns_new_object(base_adata, dense):
+    if dense.shape[0] < 2:
+        pytest.skip("shape too small")
+    va = VCSCAnnData.from_anndata(base_adata)
+    sub = va[0:2, :]
+    assert isinstance(sub.raw_X, VCSCArray)
+    np.testing.assert_allclose(sub.raw_X.toarray(), dense[0:2])
+    assert sub is not va
+
+
+def test_getitem_single_int_row(base_adata, dense):
+    va = VCSCAnnData.from_anndata(base_adata, include_raw=False)
+    sub = va[0, :]
+    assert sub.shape == (1, dense.shape[1])
+    np.testing.assert_allclose(sub.X.toarray(), dense[0:1])
+
+
+def test_getitem_with_ivcs_x(base_adata, dense):
+    """Indexing works the same when X is an IVCSCArray/IVCSRArray."""
+    if dense.shape[0] < 3 or dense.shape[1] < 3:
+        pytest.skip("shape too small")
+    v = IVCSRArray.from_scipy(sp.csr_array(dense))
+    va = VCSCAnnData(X=v, obs=base_adata.obs.copy(), var=base_adata.var.copy())
+    sub = va[1:3, [0, 2]]
+    assert isinstance(sub.X, IVCSRArray)
+    np.testing.assert_allclose(sub.X.toarray(), dense[1:3][:, [0, 2]])
 
