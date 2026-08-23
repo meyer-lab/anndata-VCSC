@@ -190,10 +190,20 @@ def _decode_chunks(
                 out[kk] = prev
 
 
-def _unpack_parallel(value_ptr: np.ndarray, buf: np.ndarray, out: np.ndarray, n_chunks: int) -> None:
+def _group_chunk_boundaries(
+    value_ptr: np.ndarray, buf: np.ndarray, n_chunks: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split ``buf`` into ``n_chunks`` pieces landing on exact group boundaries.
+
+    Returns ``(chunk_group, chunk_byte)``, each of length ``n_chunks + 1``:
+    chunk ``t`` owns groups ``[chunk_group[t], chunk_group[t + 1])``, whose
+    packed bytes start at ``chunk_byte[t]``. Shared by :func:`_unpack_parallel`
+    (decoding) and by :mod:`vcsc._ivcs_matmul` (fused decode-and-multiply),
+    which both need this same group-aligned chunking to parallelize safely.
+    """
     n_bytes = buf.shape[0]
     n_groups = value_ptr.shape[0] - 1
-    nnz = out.shape[0]
+    nnz = int(value_ptr[-1])
 
     guesses = np.linspace(0, n_bytes, n_chunks + 1).astype(np.int64)
     real_starts = np.empty(n_chunks + 1, dtype=np.int64)
@@ -224,6 +234,11 @@ def _unpack_parallel(value_ptr: np.ndarray, buf: np.ndarray, out: np.ndarray, n_
             chunk_group[t] = g + 1
             chunk_byte[t] = _advance_n_varints(buf, real_starts[t], extra)
 
+    return chunk_group, chunk_byte
+
+
+def _unpack_parallel(value_ptr: np.ndarray, buf: np.ndarray, out: np.ndarray, n_chunks: int) -> None:
+    chunk_group, chunk_byte = _group_chunk_boundaries(value_ptr, buf, n_chunks)
     _decode_chunks(value_ptr, buf, out, chunk_group, chunk_byte)
 
 

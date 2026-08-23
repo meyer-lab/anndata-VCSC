@@ -96,8 +96,6 @@ def test_wrong_format_raises(ivcls):
 @pytest.mark.parametrize(
     "op",
     [
-        lambda nv: nv @ np.ones(nv.shape[1]),
-        lambda nv: np.ones(nv.shape[0]) @ nv,
         lambda nv: nv + nv,
         lambda nv: nv * 2,
     ],
@@ -107,6 +105,66 @@ def test_unsupported_operations_raise_runtime_error(dense, ivcls, op):
     nv = v.normalized()
     with pytest.raises(RuntimeError, match="not supported"):
         op(nv)
+
+
+# -- matmul: nv @ B / B @ nv, against a dense reference ----------------------
+
+
+def test_matmul_matches_reference(dense, ivcls):
+    if dense.sum() == 0:
+        pytest.skip("all-zero matrix: median row total is 0")
+    v = ivcls.from_scipy(_scipy_for(ivcls, dense))
+    nv = v.normalized()
+    ref = _reference(dense)
+
+    rng = np.random.default_rng(7)
+    B = rng.normal(size=(dense.shape[1], 3))
+    np.testing.assert_allclose(nv @ B, ref @ B, atol=1e-7)
+
+
+def test_matvec_matches_reference(dense, ivcls):
+    if dense.sum() == 0:
+        pytest.skip("all-zero matrix: median row total is 0")
+    v = ivcls.from_scipy(_scipy_for(ivcls, dense))
+    nv = v.normalized()
+    ref = _reference(dense)
+
+    rng = np.random.default_rng(8)
+    b = rng.normal(size=dense.shape[1])
+    np.testing.assert_allclose(nv @ b, ref @ b, atol=1e-7)
+
+
+def test_rmatmul_matches_reference(dense, ivcls):
+    if dense.sum() == 0:
+        pytest.skip("all-zero matrix: median row total is 0")
+    v = ivcls.from_scipy(_scipy_for(ivcls, dense))
+    nv = v.normalized()
+    ref = _reference(dense)
+
+    rng = np.random.default_rng(9)
+    B = rng.normal(size=(3, dense.shape[0]))
+    np.testing.assert_allclose(B @ nv, B @ ref, atol=1e-7)
+
+
+def test_rmatvec_matches_reference(dense, ivcls):
+    if dense.sum() == 0:
+        pytest.skip("all-zero matrix: median row total is 0")
+    v = ivcls.from_scipy(_scipy_for(ivcls, dense))
+    nv = v.normalized()
+    ref = _reference(dense)
+
+    rng = np.random.default_rng(10)
+    b = rng.normal(size=dense.shape[0])
+    np.testing.assert_allclose(b @ nv, b @ ref, atol=1e-7)
+
+
+def test_matmul_bad_shape_raises(dense, ivcls):
+    v = ivcls.from_scipy(_scipy_for(ivcls, dense))
+    nv = v.normalized()
+    with pytest.raises(ValueError, match="shape mismatch"):
+        nv @ np.ones(dense.shape[1] + 1)
+    with pytest.raises(ValueError, match="shape mismatch"):
+        np.ones(dense.shape[0] + 1) @ nv
 
 
 def test_all_zero_matrix_does_not_crash(ivcls):

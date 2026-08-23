@@ -284,10 +284,16 @@ class _IVCSNormalizedBase:
         )
 
     def __matmul__(self, other: Any) -> Any:
-        return self._unsupported("matrix multiplication")
+        """``self @ other`` for a dense ``other`` -- see :mod:`vcsc._ivcs_matmul`."""
+        from vcsc._ivcs_matmul import normalized_at_dense
+
+        return normalized_at_dense(self, other)
 
     def __rmatmul__(self, other: Any) -> Any:
-        return self._unsupported("matrix multiplication")
+        """``other @ self`` for a dense ``other`` -- see :mod:`vcsc._ivcs_matmul`."""
+        from vcsc._ivcs_matmul import dense_at_normalized
+
+        return dense_at_normalized(self, other)
 
     def __add__(self, other: Any) -> Any:
         return self._unsupported("addition")
