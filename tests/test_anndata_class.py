@@ -203,7 +203,7 @@ def test_raw_x_setter_validation(base_adata, dense):
     """Verify type checking and assignment behavior on the raw_X property."""
     va = VCSCAnnData.from_anndata(base_adata)
     with pytest.raises(TypeError, match="raw_X must be a VCSCArray or VCSRArray"):
-        va.raw_X = dense  # type: ignore[assignment]
+        va.raw_X = "invalid_string"  # type: ignore[assignment]
 
     new_v = VCSRArray.from_scipy(sp.csr_array(dense))
     va.raw_X = new_v

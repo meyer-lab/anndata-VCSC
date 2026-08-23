@@ -6,7 +6,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 import anndata as ad
+import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 from vcsc import _compression, _io
 from vcsc._base import VCSCArray, VCSRArray, _VCSBase
@@ -68,14 +70,16 @@ class VCSCAnnData(ad.AnnData):
             raise TypeError(
                 "VCSCAnnData does not support the standard `raw=` argument; pass `raw_X=` instead."
             )
-        self._vcs_X: _VCSBase | None = X
-        self._vcs_raw_X: _VCSBase | None = raw_X
+        self._vcs_X: _VCSBase | None = None
+        self._vcs_raw_X: _VCSBase | None = None
         shape = kwargs.pop("shape", None)
         if shape is None and X is None and "obs" not in kwargs:
             shape = (0, 0)
         elif X is not None or ("obs" in kwargs and "var" in kwargs):
             shape = None
         super().__init__(X=None, shape=shape, **kwargs)
+        self._vcs_X = X
+        self._vcs_raw_X = raw_X
 
     # -- X / raw_X ------------------------------------------------------------
 
@@ -84,9 +88,14 @@ class VCSCAnnData(ad.AnnData):
         return self._vcs_X
 
     @X.setter
-    def X(self, value: _VCSBase | None) -> None:
-        _check_vcs_type(value, "X")
-        if value is not None and value.shape != self.shape:
+    def X(self, value: Any) -> None:
+        if value is not None and not isinstance(value, _VCS_TYPES):
+            if sp.issparse(value) or isinstance(value, np.ndarray):
+                vcls = VCSCArray if isinstance(value, sp.csc_array | sp.csc_matrix) else VCSRArray
+                value = vcls.from_scipy(value)
+            else:
+                _check_vcs_type(value, "X")
+        if value is not None and hasattr(self, "_obs") and hasattr(self, "_var") and value.shape != self.shape:
             raise ValueError(f"X shape {value.shape} does not match adata shape {self.shape}")
         self._vcs_X = value
 
@@ -96,8 +105,13 @@ class VCSCAnnData(ad.AnnData):
         return self._vcs_raw_X
 
     @raw_X.setter
-    def raw_X(self, value: _VCSBase | None) -> None:
-        _check_vcs_type(value, "raw_X")
+    def raw_X(self, value: Any) -> None:
+        if value is not None and not isinstance(value, _VCS_TYPES):
+            if sp.issparse(value) or isinstance(value, np.ndarray):
+                vcls = VCSCArray if isinstance(value, sp.csc_array | sp.csc_matrix) else VCSRArray
+                value = vcls.from_scipy(value)
+            else:
+                _check_vcs_type(value, "raw_X")
         self._vcs_raw_X = value
 
     # -- conversion -------------------------------------------------------------
