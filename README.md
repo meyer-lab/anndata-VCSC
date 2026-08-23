@@ -36,6 +36,22 @@ va.write_h5ad("compressed.h5ad")             # read back with VCSCAnnData.read_h
 plain = va.to_anndata()                      # escape hatch back to a normal AnnData
 ```
 
+`write_h5ad`/`write_zarr` compress every array with Blosc2+LZ4 by default (pass
+`dataset_kwargs={}` to disable, or your own `dataset_kwargs` to override).
+
+For smaller files at the cost of extra work on write/read, pass
+`format="ivcsc"` to store the IVCSC/IVCSR on-disk format instead -- the same
+VCSC/VCSR layout, but with the minor-axis indices delta+varint byte-packed
+(inspired by [IVSparse's IVCSC](https://github.com/Seth-Wolfgang/IVSparse)).
+It's purely a storage format: `read_h5ad`/`read_zarr` always hand back an
+ordinary VCSCArray/VCSRArray, decompressed from IVCSC/IVCSR immediately on
+load.
+
+```python
+va.write_h5ad("archived.h5ad", format="ivcsc")
+vcsc.VCSCAnnData.read_h5ad("archived.h5ad")  # X is a plain VCSCArray again
+```
+
 See `docs/` for full usage and API documentation.
 
 ## Development

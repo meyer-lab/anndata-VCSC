@@ -77,6 +77,27 @@ plain = va.to_anndata()
 
 Standard `AnnData` validates every array assigned to `X`/`layers`/etc. against a fixed
 allowlist of types, so a plain `AnnData` cannot hold a `VCSCArray` in `X`.
+
+### On-disk compression and the IVCSC/IVCSR storage format
+
+`write_h5ad`/`write_zarr` compress every array with Blosc2+LZ4 by default
+(`h5py`/`hdf5plugin` for `.h5ad`, `numcodecs`/zarr's native Blosc codec for
+zarr). Pass `dataset_kwargs={}` to write uncompressed, or your own
+`dataset_kwargs` to use a different codec.
+
+`X`/`raw_X` are stored in the VCSC/VCSR layout by default (`format="vcsc"`).
+Passing `format="ivcsc"` instead stores them as **IVCSC/IVCSR** -- the same
+layout, but with the minor-axis `indices` array delta+varint byte-packed
+(inspired by [IVSparse's IVCSC](https://github.com/Seth-Wolfgang/IVSparse)).
+This is a *file-storage-only* format: it trades extra CPU on write/read for a
+smaller file, and there is no in-memory IVCSC array type to compute with --
+`read_h5ad`/`read_zarr` always hand back an ordinary VCSCArray/VCSRArray,
+decompressed from IVCSC/IVCSR immediately on load.
+
+```python
+va.write_h5ad("archived.h5ad", format="ivcsc")
+va4 = vcsc.VCSCAnnData.read_h5ad("archived.h5ad")  # va4.X is a plain VCSCArray
+```
 `VCSCAnnData` works around this by overriding the `X` property; as a consequence,
 operations that need anndata's normal per-element type dispatch on `X` -- slicing into
 views, concatenation, most of the scanpy/anndata ecosystem -- are **not** supported while
