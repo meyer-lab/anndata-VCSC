@@ -172,13 +172,14 @@ def _filter_and_compact(
     gene_remap[~gene_mask] = -1
     n_kept_genes = int(gene_mask.sum())
 
-    counts = np.empty(kept_rows.shape[0], dtype=np.int64)
+    idx_dtype = np.int64 if indices.shape[0] > np.iinfo(np.int32).max else np.int32
+    counts = np.empty(kept_rows.shape[0], dtype=idx_dtype)
     _count_kept(row_indptr, indices, gene_mask, kept_rows, counts)
-    new_indptr = np.zeros(kept_rows.shape[0] + 1, dtype=np.int64)
+    new_indptr = np.zeros(kept_rows.shape[0] + 1, dtype=idx_dtype)
     np.cumsum(counts, out=new_indptr[1:])
 
     nnz_filtered = int(new_indptr[-1])
-    out_indices = np.empty(nnz_filtered, dtype=np.int32)
+    out_indices = np.empty(nnz_filtered, dtype=idx_dtype)
     out_data = np.empty(nnz_filtered, dtype=np.float32)
     _fill_kept(row_indptr, indices, data, gene_remap, kept_rows, new_indptr, out_indices, out_data)
 
