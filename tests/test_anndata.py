@@ -54,3 +54,26 @@ def test_from_anndata_dense_x(dense):
     obj = ad.AnnData(X=dense)
     v = vcsc.from_anndata(obj)
     np.testing.assert_allclose(v.to_scipy().toarray(), dense)
+
+
+def test_from_anndata_raw_none_raises(dense):
+    """Verify that requesting use_raw=True on an AnnData with no .raw raises ValueError."""
+    obj = ad.AnnData(X=sp.csr_array(dense))
+    with pytest.raises(ValueError, match=r"adata\.raw is None"):
+        vcsc.from_anndata(obj, use_raw=True)
+
+
+def test_from_anndata_invalid_format_raises(adata):
+    """Verify that passing an invalid format string raises ValueError."""
+    with pytest.raises(ValueError, match="format must be 'csc' or 'csr'"):
+        vcsc.from_anndata(adata, format="invalid_format")
+
+
+def test_to_layer_shape_mismatch_raises(adata, dense):
+    """Verify that storing an array with mismatched dimensions to layer raises ValueError."""
+    v = vcsc.from_anndata(adata)
+    # Create an incompatible shape AnnData
+    mismatched_adata = ad.AnnData(X=np.zeros((dense.shape[0] + 1, dense.shape[1])))
+    with pytest.raises(ValueError, match="shape mismatch"):
+        vcsc.to_layer(mismatched_adata, v, key="layer_key")
+

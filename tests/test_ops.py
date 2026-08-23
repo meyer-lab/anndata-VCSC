@@ -77,6 +77,57 @@ def test_matmat_left(dense, vcls, rng):
 
 
 def test_matvec_dimension_mismatch_raises(dense, vcls):
+    """Verify that dimension mismatch in matrix-vector product raises ValueError."""
     v = _make(vcls, dense)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not aligned"):
         v @ np.ones(dense.shape[1] + 1)
+
+
+def test_scalar_mul_zero_returns_empty_like(dense, vcls):
+    """Verify that multiplying by 0 produces an empty-like array preserving shape and dtype."""
+    v = _make(vcls, dense)
+    v0 = v * 0
+    assert isinstance(v0, vcls)
+    assert v0.shape == v.shape
+    assert v0.dtype == v.dtype
+    assert v0.nnz == 0
+    assert v0.n_unique == 0
+    np.testing.assert_allclose(v0.toarray(), np.zeros(v.shape))
+
+
+def test_unsupported_scalar_operands_raise(dense, vcls):
+    """Verify that non-scalar operand types in arithmetic operators return NotImplemented or raise TypeError."""
+    v = _make(vcls, dense)
+    assert v.__mul__([1, 2]) is NotImplemented
+    assert v.__truediv__([1, 2]) is NotImplemented
+    with pytest.raises(TypeError):
+        _ = v * {"a": 1}
+    with pytest.raises(TypeError):
+        _ = v / {"a": 1}
+
+
+def test_matmat_dimension_mismatch_raises(dense, vcls):
+    """Verify that dimension mismatches in 2-D matrix products raise ValueError."""
+    v = _make(vcls, dense)
+    # Right matrix multiplication dimension mismatch
+    with pytest.raises(ValueError, match="not aligned"):
+        v @ np.ones((dense.shape[1] + 2, 4))
+
+    # Left vector multiplication dimension mismatch
+    with pytest.raises(ValueError, match="not aligned"):
+        np.ones(dense.shape[0] + 2) @ v
+
+    # Left matrix multiplication dimension mismatch
+    with pytest.raises(ValueError, match="not aligned"):
+        np.ones((4, dense.shape[0] + 2)) @ v
+
+
+def test_unsupported_matmul_operands_raise(dense, vcls):
+    """Verify that >2D array operands in matmul raise TypeError."""
+    v = _make(vcls, dense)
+    arr_3d = np.ones((dense.shape[1], 2, 2))
+    with pytest.raises(TypeError):
+        _ = v @ arr_3d
+    with pytest.raises(TypeError):
+        _ = arr_3d @ v
+

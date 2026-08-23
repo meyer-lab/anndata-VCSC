@@ -138,3 +138,43 @@ def test_metadata_sliced_correctly(tmp_path, rng):
     # Check X
     assert isinstance(result.X, sp.csr_array)
     np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
+
+
+def test_rapid_load_preserves_raw(tmp_path, rng):
+    """Verify that load_and_normalize restores adata.raw when present in the h5ad file."""
+    import h5py
+
+    from vcsc import VCSRArray, _io
+
+    dense = rng.integers(0, 8, size=(40, 20)).astype(np.float64)
+    adata = ad.AnnData(X=sp.csr_array(dense))
+    adata.raw = adata
+
+    path = tmp_path / "raw_test.ivcsr.h5ad"
+    with h5py.File(path, "w") as f:
+        _io.write_ivcs_elem(f, "X", VCSRArray.from_scipy(sp.csr_array(dense)))
+        ad.io.write_elem(f, "obs", adata.obs)
+        ad.io.write_elem(f, "var", adata.var)
+        ad.io.write_elem(f, "raw", {"X": sp.csr_array(dense), "var": adata.var})
+
+    result = load_and_normalize(path, min_cell_counts=-1.0, gene_threshold=0.0)
+    assert result.raw is not None
+
+
+def test_rapid_load_custom_x_key(tmp_path, rng):
+    """Verify load_and_normalize reads from a custom top-level group key."""
+    import h5py
+
+    from vcsc import VCSRArray, _io
+
+    dense = rng.integers(0, 8, size=(30, 15)).astype(np.float64)
+    vcsr = VCSRArray.from_scipy(sp.csr_array(dense))
+
+    path = tmp_path / "custom_key.h5ad"
+    with h5py.File(path, "w") as f:
+        _io.write_ivcs_elem(f, "custom_matrix", vcsr)
+
+    result = load_and_normalize(path, x_key="custom_matrix", min_cell_counts=-1.0, gene_threshold=0.0)
+    assert isinstance(result, ad.AnnData)
+    assert result.shape == dense.shape
+
