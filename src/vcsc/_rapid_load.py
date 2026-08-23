@@ -356,7 +356,10 @@ def load_and_normalize(
         (normalized, out_indices, new_indptr), shape=(kept_rows.shape[0], n_kept_genes)
     )
 
-    adata = ad.AnnData(shape=shape, **kwargs)  # ty: ignore[invalid-argument-type]
+    if "obs" in kwargs and "var" in kwargs:
+        adata = ad.AnnData(**kwargs)  # ty: ignore[invalid-argument-type]
+    else:
+        adata = ad.AnnData(shape=shape, **kwargs)  # ty: ignore[invalid-argument-type]
     adata = adata[cell_mask, gene_mask].copy()
     adata.X = X
 

@@ -68,10 +68,14 @@ class VCSCAnnData(ad.AnnData):
             raise TypeError(
                 "VCSCAnnData does not support the standard `raw=` argument; pass `raw_X=` instead."
             )
-        shape = X.shape if X is not None else kwargs.pop("shape", None)
-        super().__init__(X=None, shape=shape, **kwargs)
         self._vcs_X: _VCSBase | None = X
         self._vcs_raw_X: _VCSBase | None = raw_X
+        shape = kwargs.pop("shape", None)
+        if shape is None and X is None and "obs" not in kwargs:
+            shape = (0, 0)
+        elif X is not None or ("obs" in kwargs and "var" in kwargs):
+            shape = None
+        super().__init__(X=None, shape=shape, **kwargs)
 
     # -- X / raw_X ------------------------------------------------------------
 

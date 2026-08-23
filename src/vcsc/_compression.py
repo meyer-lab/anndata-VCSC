@@ -42,11 +42,23 @@ def h5_dataset_kwargs() -> dict[str, Any]:
     return dict(hdf5plugin.Blosc2(cname="lz4"))
 
 
+def _is_zarr_v2() -> bool:
+    try:
+        from anndata.compat import is_zarr_v2
+
+        return bool(is_zarr_v2())
+    except (ImportError, AttributeError):
+        try:
+            import zarr
+
+            return getattr(zarr, "__version__", "").startswith("2.")
+        except Exception:
+            return False
+
+
 def zarr_dataset_kwargs() -> dict[str, Any]:
     """``dataset_kwargs`` for Blosc+LZ4 compression, understood by anndata's zarr writers."""
-    from anndata.compat import is_zarr_v2
-
-    if is_zarr_v2():
+    if _is_zarr_v2():
         import numcodecs
 
         return {"compressor": numcodecs.Blosc(cname="lz4")}
@@ -104,9 +116,8 @@ def _numeric_only_h5() -> Iterator[None]:
 @contextlib.contextmanager
 def _numeric_only_zarr() -> Iterator[None]:
     import zarr
-    from anndata.compat import is_zarr_v2
 
-    if is_zarr_v2():
+    if _is_zarr_v2():
         original = zarr.Group.create_dataset  # ty: ignore[deprecated]
         keys = _ZARR_V2_COMPRESSION_KEYS
 
