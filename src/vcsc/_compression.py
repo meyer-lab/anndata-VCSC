@@ -21,7 +21,7 @@ string/object arrays always land uncompressed, regardless of what
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -42,11 +42,18 @@ def h5_dataset_kwargs() -> dict[str, Any]:
     return dict(hdf5plugin.Blosc2(cname="lz4"))
 
 
+def _is_zarr_v2() -> bool:
+    try:
+        import zarr
+
+        return getattr(zarr, "__version__", "").startswith("2.")
+    except Exception:
+        return False
+
+
 def zarr_dataset_kwargs() -> dict[str, Any]:
     """``dataset_kwargs`` for Blosc+LZ4 compression, understood by anndata's zarr writers."""
-    from anndata.compat import is_zarr_v2
-
-    if is_zarr_v2():
+    if _is_zarr_v2():
         import numcodecs
 
         return {"compressor": numcodecs.Blosc(cname="lz4")}
@@ -104,24 +111,25 @@ def _numeric_only_h5() -> Iterator[None]:
 @contextlib.contextmanager
 def _numeric_only_zarr() -> Iterator[None]:
     import zarr
-    from anndata.compat import is_zarr_v2
 
-    if is_zarr_v2():
-        original = zarr.Group.create_dataset
-        keys = _ZARR_V2_COMPRESSION_KEYS
+    if _is_zarr_v2():
+        zarr_group = cast(Any, zarr.Group)
+        original_ds = getattr(zarr_group, "create_dataset", None)
+        if original_ds is not None:
+            keys = _ZARR_V2_COMPRESSION_KEYS
 
-        def patched(self: zarr.Group, name: str, **kwargs: Any) -> Any:
-            if _is_string_like(kwargs.get("dtype"), kwargs.get("data")):
-                for key in keys:
-                    kwargs[key] = None
-            return original(self, name, **kwargs)
+            def patched_ds(self: Any, name: str, **kwargs: Any) -> Any:
+                if _is_string_like(kwargs.get("dtype"), kwargs.get("data")):
+                    for key in keys:
+                        kwargs[key] = None
+                return original_ds(self, name, **kwargs)
 
-        zarr.Group.create_dataset = patched
-        try:
-            yield
-        finally:
-            zarr.Group.create_dataset = original
-        return
+            zarr_group.create_dataset = patched_ds
+            try:
+                yield
+            finally:
+                zarr_group.create_dataset = original_ds
+            return
 
     original = zarr.Group.create_array
     keys = _ZARR_V3_COMPRESSION_KEYS

@@ -87,7 +87,7 @@ def _cell_totals(major_ptr: np.ndarray, values: np.ndarray, value_ptr: np.ndarra
 @numba.njit(cache=True, parallel=True)
 def _expand_values(values: np.ndarray, value_ptr: np.ndarray, out: np.ndarray) -> None:
     n_unique = values.shape[0]
-    for k in numba.prange(n_unique):
+    for k in numba.prange(n_unique):  # ty: ignore[not-iterable]
         v = values[k]
         for p in range(value_ptr[k], value_ptr[k + 1]):
             out[p] = v
@@ -109,7 +109,7 @@ def _weighted_bincount(
     n = indices.shape[0]
     chunk = (n + nthreads - 1) // nthreads
     partial = np.zeros((nthreads, n_bins), dtype=np.float64)
-    for t in numba.prange(nthreads):
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
         start = t * chunk
         end = min(n, start + chunk)
         local = partial[t]
@@ -129,7 +129,7 @@ def _count_kept(
     kept_rows: np.ndarray,
     out_counts: np.ndarray,
 ) -> None:
-    for j in numba.prange(kept_rows.shape[0]):
+    for j in numba.prange(kept_rows.shape[0]):  # ty: ignore[not-iterable]
         r = kept_rows[j]
         c = 0
         for k in range(row_indptr[r], row_indptr[r + 1]):
@@ -149,7 +149,7 @@ def _fill_kept(
     out_indices: np.ndarray,
     out_data: np.ndarray,
 ) -> None:
-    for j in numba.prange(kept_rows.shape[0]):
+    for j in numba.prange(kept_rows.shape[0]):  # ty: ignore[not-iterable]
         r = kept_rows[j]
         pos = new_indptr[j]
         for k in range(row_indptr[r], row_indptr[r + 1]):
@@ -203,7 +203,7 @@ def _filter_and_compact(
 
 @numba.njit(cache=True, parallel=True)
 def _row_sums(indptr: np.ndarray, data: np.ndarray, out: np.ndarray) -> None:
-    for r in numba.prange(out.shape[0]):
+    for r in numba.prange(out.shape[0]):  # ty: ignore[not-iterable]
         s = 0.0
         for k in range(indptr[r], indptr[r + 1]):
             s += data[k]
@@ -222,7 +222,7 @@ def _scaled_col_sums(
     n_rows = indptr.shape[0] - 1
     chunk = (n_rows + nthreads - 1) // nthreads
     partial = np.zeros((nthreads, n_bins), dtype=np.float64)
-    for t in numba.prange(nthreads):
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
         start = t * chunk
         end = min(n_rows, start + chunk)
         local = partial[t]
@@ -243,7 +243,7 @@ def _fused_normalize_transform(
 ) -> None:
     """Overwrites ``data`` in place -- each output only depends on its own input."""
     n_rows = indptr.shape[0] - 1
-    for r in numba.prange(n_rows):
+    for r in numba.prange(n_rows):  # ty: ignore[not-iterable]
         sc = row_scale[r]
         for k in range(indptr[r], indptr[r + 1]):
             v = (data[k] / sc) / gene_sums[indices[k]]
@@ -317,7 +317,7 @@ def load_and_normalize(
 
     with h5py.File(Path(path), "r") as f:
         g = f[x_key]
-        shape = tuple(int(s) for s in np.asarray(g.attrs["shape"]).tolist())
+        shape = (int(g.attrs["shape"][0]), int(g.attrs["shape"][1]))
         indices_dtype = np.dtype(g.attrs["indices_dtype"])
         major_ptr = g["major_ptr"][...]
         values = g["values"][...]
@@ -350,14 +350,16 @@ def load_and_normalize(
         row_indptr, indices, data, cell_mask, gene_mask
     )
     del indices, data, row_indptr
-    kept_genes = np.nonzero(gene_mask)[0]
 
     normalized = _normalize_and_transform(new_indptr, out_indices, out_data, n_kept_genes)
     X = csr_array(
         (normalized, out_indices, new_indptr), shape=(kept_rows.shape[0], n_kept_genes)
     )
 
-    adata = ad.AnnData(shape=shape, **kwargs)
+    if "obs" in kwargs and "var" in kwargs:
+        adata = ad.AnnData(**kwargs)  # ty: ignore[invalid-argument-type]
+    else:
+        adata = ad.AnnData(shape=shape, **kwargs)  # ty: ignore[invalid-argument-type]
     adata = adata[cell_mask, gene_mask].copy()
     adata.X = X
 

@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Datasets / archives
+*.h5ad
+*.zarr
+*.h5

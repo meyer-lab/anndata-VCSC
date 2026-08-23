@@ -51,10 +51,11 @@ def test_matches_reference_normalization(tmp_path, rng, min_cell_counts, gene_th
     result = load_and_normalize(
         path, min_cell_counts=min_cell_counts, gene_threshold=gene_threshold
     )
-    ref_X, ref_cells, ref_genes = _reference_prepare(dense, min_cell_counts, gene_threshold)
+    ref_X, _, _ = _reference_prepare(dense, min_cell_counts, gene_threshold)
 
     assert isinstance(result, ad.AnnData)
     assert result.shape == ref_X.shape
+    assert isinstance(result.X, sp.csr_array)
     np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
 
 
@@ -79,11 +80,11 @@ def test_metadata_sliced_correctly(tmp_path, rng):
 
     obs = pd.DataFrame(
         {"cell_type": [f"type_{i % 3}" for i in range(n_cells)], "batch": range(n_cells)},
-        index=[f"cell_{i}" for i in range(n_cells)],
+        index=pd.Index([f"cell_{i}" for i in range(n_cells)]),
     )
     var = pd.DataFrame(
         {"gene_symbol": [f"SYM_{j}" for j in range(n_genes)]},
-        index=[f"gene_{j}" for j in range(n_genes)],
+        index=pd.Index([f"gene_{j}" for j in range(n_genes)]),
     )
     obsm = {"pca": rng.random((n_cells, 5))}
     varm = {"loadings": rng.random((n_genes, 3))}
@@ -124,15 +125,56 @@ def test_metadata_sliced_correctly(tmp_path, rng):
     assert list(result.var["gene_symbol"]) == [f"SYM_{j}" for j in ref_genes]
 
     # Check obsm/varm
-    np.testing.assert_allclose(result.obsm["pca"], obsm["pca"][ref_cells])
-    np.testing.assert_allclose(result.varm["loadings"], varm["loadings"][ref_genes])
+    np.testing.assert_allclose(np.asarray(result.obsm["pca"]), np.asarray(obsm["pca"])[ref_cells])
+    np.testing.assert_allclose(np.asarray(result.varm["loadings"]), np.asarray(varm["loadings"])[ref_genes])
 
     # Check obsp/varp
-    np.testing.assert_allclose(result.obsp["distances"], obsp["distances"][ref_cells][:, ref_cells])
-    np.testing.assert_allclose(result.varp["correlations"], varp["correlations"][ref_genes][:, ref_genes])
+    np.testing.assert_allclose(np.asarray(result.obsp["distances"]), np.asarray(obsp["distances"])[ref_cells][:, ref_cells])
+    np.testing.assert_allclose(np.asarray(result.varp["correlations"]), np.asarray(varp["correlations"])[ref_genes][:, ref_genes])
 
     # Check uns
     assert result.uns == uns
 
     # Check X
+    assert isinstance(result.X, sp.csr_array)
     np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
+
+
+def test_rapid_load_preserves_raw(tmp_path, rng):
+    """Verify that load_and_normalize restores adata.raw when present in the h5ad file."""
+    import h5py
+
+    from vcsc import VCSRArray, _io
+
+    dense = rng.integers(0, 8, size=(40, 20)).astype(np.float64)
+    adata = ad.AnnData(X=sp.csr_array(dense))
+    adata.raw = adata
+
+    path = tmp_path / "raw_test.ivcsr.h5ad"
+    with h5py.File(path, "w") as f:
+        _io.write_ivcs_elem(f, "X", VCSRArray.from_scipy(sp.csr_array(dense)))
+        ad.io.write_elem(f, "obs", adata.obs)
+        ad.io.write_elem(f, "var", adata.var)
+        ad.io.write_elem(f, "raw", {"X": sp.csr_array(dense), "var": adata.var})
+
+    result = load_and_normalize(path, min_cell_counts=-1.0, gene_threshold=0.0)
+    assert result.raw is not None
+
+
+def test_rapid_load_custom_x_key(tmp_path, rng):
+    """Verify load_and_normalize reads from a custom top-level group key."""
+    import h5py
+
+    from vcsc import VCSRArray, _io
+
+    dense = rng.integers(0, 8, size=(30, 15)).astype(np.float64)
+    vcsr = VCSRArray.from_scipy(sp.csr_array(dense))
+
+    path = tmp_path / "custom_key.h5ad"
+    with h5py.File(path, "w") as f:
+        _io.write_ivcs_elem(f, "custom_matrix", vcsr)
+
+    result = load_and_normalize(path, x_key="custom_matrix", min_cell_counts=-1.0, gene_threshold=0.0)
+    assert isinstance(result, ad.AnnData)
+    assert result.shape == dense.shape
+

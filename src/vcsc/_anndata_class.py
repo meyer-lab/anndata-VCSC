@@ -6,7 +6,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 import anndata as ad
+import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 from vcsc import _compression, _io
 from vcsc._base import VCSCArray, VCSRArray, _VCSBase
@@ -68,10 +70,16 @@ class VCSCAnnData(ad.AnnData):
             raise TypeError(
                 "VCSCAnnData does not support the standard `raw=` argument; pass `raw_X=` instead."
             )
-        shape = X.shape if X is not None else kwargs.pop("shape", None)
+        self._vcs_X: _VCSBase | None = None
+        self._vcs_raw_X: _VCSBase | None = None
+        shape = kwargs.pop("shape", None)
+        if shape is None and X is None and "obs" not in kwargs:
+            shape = (0, 0)
+        elif X is not None or ("obs" in kwargs and "var" in kwargs):
+            shape = None
         super().__init__(X=None, shape=shape, **kwargs)
-        self._vcs_X: _VCSBase | None = X
-        self._vcs_raw_X: _VCSBase | None = raw_X
+        self._vcs_X = X
+        self._vcs_raw_X = raw_X
 
     # -- X / raw_X ------------------------------------------------------------
 
@@ -80,9 +88,14 @@ class VCSCAnnData(ad.AnnData):
         return self._vcs_X
 
     @X.setter
-    def X(self, value: _VCSBase | None) -> None:
-        _check_vcs_type(value, "X")
-        if value is not None and value.shape != self.shape:
+    def X(self, value: Any) -> None:
+        if value is not None and not isinstance(value, _VCS_TYPES):
+            if sp.issparse(value) or isinstance(value, np.ndarray):
+                vcls = VCSCArray if isinstance(value, sp.csc_array | sp.csc_matrix) else VCSRArray
+                value = vcls.from_scipy(value)
+            else:
+                _check_vcs_type(value, "X")
+        if value is not None and hasattr(self, "_obs") and hasattr(self, "_var") and value.shape != self.shape:
             raise ValueError(f"X shape {value.shape} does not match adata shape {self.shape}")
         self._vcs_X = value
 
@@ -92,8 +105,13 @@ class VCSCAnnData(ad.AnnData):
         return self._vcs_raw_X
 
     @raw_X.setter
-    def raw_X(self, value: _VCSBase | None) -> None:
-        _check_vcs_type(value, "raw_X")
+    def raw_X(self, value: Any) -> None:
+        if value is not None and not isinstance(value, _VCS_TYPES):
+            if sp.issparse(value) or isinstance(value, np.ndarray):
+                vcls = VCSCArray if isinstance(value, sp.csc_array | sp.csc_matrix) else VCSRArray
+                value = vcls.from_scipy(value)
+            else:
+                _check_vcs_type(value, "raw_X")
         self._vcs_raw_X = value
 
     # -- conversion -------------------------------------------------------------
@@ -120,11 +138,11 @@ class VCSCAnnData(ad.AnnData):
             obs=cast(pd.DataFrame, adata.obs).copy(),
             var=cast(pd.DataFrame, adata.var).copy(),
             uns=adata.uns,
-            obsm=dict(adata.obsm),
-            varm=dict(adata.varm),
-            obsp=dict(adata.obsp),
-            varp=dict(adata.varp),
-            layers=dict(adata.layers),
+            obsm={k: v for k, v in adata.obsm.items() if k is not None},
+            varm={k: v for k, v in adata.varm.items() if k is not None},
+            obsp={k: v for k, v in adata.obsp.items() if k is not None},
+            varp={k: v for k, v in adata.varp.items() if k is not None},
+            layers={k: v for k, v in adata.layers.items() if k is not None},
         )
 
     def to_anndata(self) -> ad.AnnData:
@@ -136,11 +154,11 @@ class VCSCAnnData(ad.AnnData):
             obs=obs.copy(),
             var=var.copy(),
             uns=self.uns,
-            obsm=dict(self.obsm),
-            varm=dict(self.varm),
-            obsp=dict(self.obsp),
-            varp=dict(self.varp),
-            layers=dict(self.layers),
+            obsm=cast(Any, {k: v for k, v in self.obsm.items() if k is not None}),
+            varm=cast(Any, {k: v for k, v in self.varm.items() if k is not None}),
+            obsp=cast(Any, {k: v for k, v in self.obsp.items() if k is not None}),
+            varp=cast(Any, {k: v for k, v in self.varp.items() if k is not None}),
+            layers=cast(Any, {k: v for k, v in self.layers.items() if k is not None}),
         )
         if self._vcs_raw_X is not None:
             out.raw = ad.AnnData(X=self._vcs_raw_X.to_scipy(), obs=obs.copy(), var=var.copy())
@@ -171,7 +189,8 @@ class VCSCAnnData(ad.AnnData):
         for key in _DF_KEYS:
             ad.io.write_elem(g, key, getattr(self, key), dataset_kwargs=dataset_kwargs)
         for key in _MAPPING_KEYS:
-            ad.io.write_elem(g, key, dict(getattr(self, key)), dataset_kwargs=dataset_kwargs)
+            mapping = {k: v for k, v in getattr(self, key).items() if k is not None}
+            ad.io.write_elem(g, key, mapping, dataset_kwargs=dataset_kwargs)
         g.attrs["encoding-type"] = "anndata"
         g.attrs["encoding-version"] = "0.1.0"
 
@@ -185,7 +204,7 @@ class VCSCAnnData(ad.AnnData):
         raw_X = cast("_VCSBase | None", ad.io.read_elem(g["raw_X"]) if "raw_X" in g else None)
         return cls(X=X, raw_X=raw_X, **kwargs)
 
-    def write_h5ad(
+    def write_h5ad(  # ty: ignore[invalid-method-override]
         self,
         filename: str | PathLike[str],
         *,

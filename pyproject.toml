@@ -6,12 +6,12 @@ readme = "README.md"
 authors = [
     { name = "Aaron Meyer", email = "git@ameyer.me" }
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "numpy>=1.26",
+    "numpy>=2.0",
     "scipy>=1.12",
     "numba>=0.60",
-    "anndata>=0.10",
+    "anndata>=0.13",
     "hdf5plugin>=4.0",
 ]
 
@@ -37,7 +37,7 @@ build-backend = "uv_build"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "NPY", "RUF"]
@@ -47,7 +47,7 @@ ignore = ["E501"]
 known-first-party = ["vcsc"]
 
 [tool.ty.environment]
-python-version = "3.11"
+python-version = "3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

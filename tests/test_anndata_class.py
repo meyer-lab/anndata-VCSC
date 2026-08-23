@@ -183,3 +183,29 @@ def test_uns_embedding_roundtrips_via_registry(base_adata, dense, tmp_path):
 
     assert isinstance(read_back["vcsc_extra"], VCSCArray)
     np.testing.assert_allclose(read_back["vcsc_extra"].to_scipy().toarray(), dense)
+
+
+def test_x_setter_validation(base_adata, dense):
+    """Verify that assigning a valid X matrix updates the X property and shape mismatch raises ValueError."""
+    va = VCSCAnnData.from_anndata(base_adata)
+    mismatched_v = VCSCArray.from_scipy(sp.csc_array(np.zeros((dense.shape[0] + 1, dense.shape[1]))))
+    with pytest.raises(ValueError, match="does not match adata shape"):
+        va.X = mismatched_v
+
+    new_x = VCSCArray.from_scipy(sp.csc_array(dense))
+    va.X = new_x
+    assert va.X is new_x
+    va.X = None
+    assert va.X is None
+
+
+def test_raw_x_setter_validation(base_adata, dense):
+    """Verify type checking and assignment behavior on the raw_X property."""
+    va = VCSCAnnData.from_anndata(base_adata)
+    with pytest.raises(TypeError, match="raw_X must be a VCSCArray or VCSRArray"):
+        va.raw_X = "invalid_string"  # type: ignore[assignment]
+
+    new_v = VCSRArray.from_scipy(sp.csr_array(dense))
+    va.raw_X = new_v
+    assert va.raw_X is new_v
+

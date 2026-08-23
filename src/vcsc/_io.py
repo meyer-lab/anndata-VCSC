@@ -28,8 +28,11 @@ from vcsc._base import VCSCArray, VCSRArray, _VCSBase
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    import h5py
+    import zarr
     from anndata._io.specs.registry import Reader, Writer
-    from anndata._types import GroupStorageType
+
+    GroupStorageType = h5py.Group | zarr.Group
 
 __all__ = ["write_ivcs_elem"]
 
