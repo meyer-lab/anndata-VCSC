@@ -41,10 +41,18 @@ process independently. Two shapes of kernel result:
   :class:`~vcsc.IVCSRArray` for ``B @ self``): the major axis a chunk
   decodes is *not* the output's disjoint axis, so every nonzero can land in
   any output row/column regardless of chunk. Each chunk instead accumulates
-  into its own private full-sized output buffer, summed across chunks at
-  the end -- the same thread-local-partial-then-reduce idiom
-  :mod:`vcsc._ivcs_norm` already uses for its column-stats scatter passes,
-  traded for parallelism at an ``O(n_chunks)`` memory multiplier.
+  into its own private output-shaped buffer, summed across chunks at the
+  end -- the same thread-local-partial-then-reduce idiom :mod:`vcsc.
+  _ivcs_norm` already uses for its column-stats scatter passes. Naively that
+  buffer is ``O(n_chunks * out_rows * k)``, which can dwarf ``nnz`` for wide
+  ``B``. Rather than cache a materialized ``Delta`` to amortize that away
+  across calls (still a persistent materialization, just deferred), each
+  call instead keeps peak memory under a fixed budget
+  (:data:`_SCATTER_MEMORY_BUDGET_BYTES`) by shrinking ``n_chunks`` if even
+  one ``B``-column's worth of accumulators would exceed it, and otherwise
+  processing ``B`` in column blocks sized to fit the budget -- trading
+  repeated byte-stream walks (more decode work, not more memory) for a
+  bounded, ``k``-independent memory footprint. See :func:`_scatter_layout`.
 """
 
 from __future__ import annotations
@@ -62,9 +70,38 @@ if TYPE_CHECKING:
 __all__ = ["dense_at_normalized", "normalized_at_dense"]
 
 
-def _chunking(value_ptr: np.ndarray, packed_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _chunking(
+    value_ptr: np.ndarray, packed_indices: np.ndarray, max_chunks: int | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     n_chunks = _num_chunks(packed_indices.shape[0])
+    if max_chunks is not None:
+        n_chunks = max(1, min(n_chunks, max_chunks))
     return _group_chunk_boundaries(value_ptr, packed_indices, n_chunks)
+
+
+# Scatter kernels (IVCSC self@B, IVCSR B@self) need one full-output-sized
+# accumulator *per decode chunk*, since a chunk's writes aren't confined to
+# any particular slice of the output (see module docstring). Left
+# unconstrained that is O(n_chunks * out_rows * k) transient memory -- for
+# wide B this can dwarf both the input and the answer. Rather than cache
+# anything to amortize repeat calls (that's still a materialization, just a
+# persistent one), each call instead: (1) shrinks n_chunks, if needed, so
+# even a single k-column's worth of accumulators fits the budget, then
+# (2) processes B in column blocks sized so the *whole* accumulator array
+# fits the budget -- re-walking the byte stream once per block rather than
+# ever growing memory with k. Peak transient memory is bounded by
+# ``_SCATTER_MEMORY_BUDGET_BYTES`` regardless of B's width or nnz.
+_SCATTER_MEMORY_BUDGET_BYTES = 512 * (1 << 20)  # 512 MiB
+
+
+def _scatter_layout(
+    n_chunks_ideal: int, out_rows: int, k: int, budget: int = _SCATTER_MEMORY_BUDGET_BYTES
+) -> tuple[int, int]:
+    """Pick (n_chunks, k_block) so ``n_chunks * out_rows * k_block * 8 <= budget``."""
+    out_rows = max(out_rows, 1)
+    n_chunks = max(1, min(n_chunks_ideal, budget // (out_rows * 8)))
+    k_block = max(1, min(k, budget // (n_chunks * out_rows * 8)))
+    return n_chunks, k_block
 
 
 # -- major-aligned: IVCSR, self @ B (out rows == major slices) --------------
@@ -273,14 +310,25 @@ def _ivcsc_matmul_delta_scatter(
 def _matmul_ivcsc(arr, row_scale, gene_scale, B: np.ndarray) -> np.ndarray:
     n_rows = arr.n_minor
     k = B.shape[1]
-    chunk_group, chunk_byte = _chunking(arr.value_ptr, arr.packed_indices)
-    n_chunks = chunk_group.shape[0] - 1
-    partial = np.zeros((max(n_chunks, 1), n_rows, k), dtype=np.float64)
-    _ivcsc_matmul_delta_scatter(
-        arr.major_ptr, arr.values, arr.value_ptr, arr.packed_indices,
-        chunk_group, chunk_byte, row_scale, gene_scale, B, partial,
-    )
-    return partial.sum(axis=0)
+    n_chunks_ideal = _num_chunks(arr.packed_indices.shape[0])
+    n_chunks, k_block = _scatter_layout(n_chunks_ideal, n_rows, k)
+    chunk_group, chunk_byte = _chunking(arr.value_ptr, arr.packed_indices, n_chunks)
+
+    out = np.empty((n_rows, k), dtype=np.float64)
+    partial = np.zeros((n_chunks, n_rows, k_block), dtype=np.float64)  # freshly zeroed (lazy pages)
+    for i, start in enumerate(range(0, k, k_block)):
+        end = min(k, start + k_block)
+        width = end - start
+        block = partial[:, :, :width]
+        if i > 0:  # reused buffer: previous block's contents need clearing
+            block[:] = 0.0
+        _ivcsc_matmul_delta_scatter(
+            arr.major_ptr, arr.values, arr.value_ptr, arr.packed_indices,
+            chunk_group, chunk_byte, row_scale, gene_scale,
+            np.ascontiguousarray(B[:, start:end]), block,
+        )
+        out[:, start:end] = block.sum(axis=0)
+    return out
 
 
 # -- scatter: IVCSR, B @ self (out cols == minor axis, not major) -----------
@@ -329,14 +377,25 @@ def _ivcsr_rmatmul_delta_scatter(
 def _rmatmul_ivcsr(arr, row_scale, gene_scale, B: np.ndarray) -> np.ndarray:
     n_cols = arr.n_minor
     p = B.shape[0]
-    chunk_group, chunk_byte = _chunking(arr.value_ptr, arr.packed_indices)
-    n_chunks = chunk_group.shape[0] - 1
-    partial = np.zeros((max(n_chunks, 1), p, n_cols), dtype=np.float64)
-    _ivcsr_rmatmul_delta_scatter(
-        arr.major_ptr, arr.values, arr.value_ptr, arr.packed_indices,
-        chunk_group, chunk_byte, row_scale, gene_scale, B, partial,
-    )
-    return partial.sum(axis=0)
+    n_chunks_ideal = _num_chunks(arr.packed_indices.shape[0])
+    n_chunks, p_block = _scatter_layout(n_chunks_ideal, n_cols, p)
+    chunk_group, chunk_byte = _chunking(arr.value_ptr, arr.packed_indices, n_chunks)
+
+    out = np.empty((p, n_cols), dtype=np.float64)
+    partial = np.zeros((n_chunks, p_block, n_cols), dtype=np.float64)  # freshly zeroed (lazy pages)
+    for i, start in enumerate(range(0, p, p_block)):
+        end = min(p, start + p_block)
+        width = end - start
+        block = partial[:, :width, :]
+        if i > 0:  # reused buffer: previous block's contents need clearing
+            block[:] = 0.0
+        _ivcsr_rmatmul_delta_scatter(
+            arr.major_ptr, arr.values, arr.value_ptr, arr.packed_indices,
+            chunk_group, chunk_byte, row_scale, gene_scale,
+            np.ascontiguousarray(B[start:end, :]), block,
+        )
+        out[start:end, :] = block.sum(axis=0)
+    return out
 
 
 # -- public entry points: dense correction + sparse delta -------------------
