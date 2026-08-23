@@ -49,8 +49,9 @@ them, and computing them is a simple ``X.mean(axis=0)`` for callers that do.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
+import anndata as ad
 import numba
 import numpy as np
 from scipy.sparse import csr_array
@@ -61,19 +62,6 @@ if TYPE_CHECKING:
     from os import PathLike
 
 __all__ = ["load_and_normalize"]
-
-
-class NormalizedData(NamedTuple):
-    """Result of :func:`load_and_normalize`."""
-
-    X: csr_array
-    """Filtered, depth-normalized, log10-transformed count matrix."""
-
-    kept_cells: np.ndarray
-    """Original row indices retained (into the on-disk matrix)."""
-
-    kept_genes: np.ndarray
-    """Original column indices retained (into the on-disk matrix)."""
 
 
 # -- group-level (no-decode) cell totals -------------------------------------
@@ -281,13 +269,16 @@ def _normalize_and_transform(
 # -- top-level entry point ---------------------------------------------------
 
 
+_FIELD_KEYS = ("obs", "var", "obsm", "varm", "obsp", "varp", "layers", "uns")
+
+
 def load_and_normalize(
     path: str | PathLike[str],
     *,
     min_cell_counts: float = 10.0,
     gene_threshold: float = 0.0,
     x_key: str = "X",
-) -> NormalizedData:
+) -> ad.AnnData:
     """Load, filter, and depth-normalize a VCSR/IVCSR-backed ``.h5ad`` file.
 
     Reproduces ``parafac2.normalize.prepare_dataset``: cells with total
@@ -296,6 +287,8 @@ def load_and_normalize(
     counts, matching the reference implementation) are dropped; the
     remaining matrix is row-normalized to the median per-cell depth, then
     column-normalized by gene sum, then transformed as ``log10(1000x + 1)``.
+    Surrounding metadata (``obs``, ``var``, ``obsm``, etc.) is sliced to
+    match the retained cells and genes.
 
     Parameters
     ----------
@@ -314,10 +307,9 @@ def load_and_normalize(
 
     Returns
     -------
-    NormalizedData
-        ``X`` (filtered/normalized CSR array), ``kept_cells``, ``kept_genes``
-        (original-index arrays for whatever rows/columns survived
-        filtering).
+    ad.AnnData
+        Filtered, depth-normalized AnnData object with ``X`` as a CSR array
+        and sliced metadata.
     """
     import h5py
     import hdf5plugin  # noqa: F401  -- registers the Blosc2 HDF5 filter
@@ -330,6 +322,10 @@ def load_and_normalize(
         values = g["values"][...]
         value_ptr = g["value_ptr"][...]
         packed = g["packed_indices"][...]
+
+        kwargs = {k: ad.io.read_elem(f[k]) for k in _FIELD_KEYS if k in f}
+        if "raw" in f:
+            kwargs["raw"] = ad.io.read_elem(f["raw"])
 
     n_cells, n_genes = shape
 
@@ -360,4 +356,8 @@ def load_and_normalize(
         (normalized, out_indices, new_indptr), shape=(kept_rows.shape[0], n_kept_genes)
     )
 
-    return NormalizedData(X=X, kept_cells=kept_rows, kept_genes=kept_genes)
+    adata = ad.AnnData(shape=shape, **kwargs)
+    adata = adata[cell_mask, gene_mask].copy()
+    adata.X = X
+
+    return adata
