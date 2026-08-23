@@ -158,7 +158,7 @@ def _advance_n_varints(buf: np.ndarray, start_byte: np.int64, n: np.int64) -> np
 @numba.njit(cache=True, parallel=True)
 def _count_all(buf: np.ndarray, real_starts: np.ndarray, out_counts: np.ndarray) -> None:
     k = real_starts.shape[0] - 1
-    for t in numba.prange(k):
+    for t in numba.prange(k):  # ty: ignore[not-iterable]
         out_counts[t] = _count_varints_range(buf, real_starts[t], real_starts[t + 1])
 
 
@@ -171,7 +171,7 @@ def _decode_chunks(
     chunk_byte: np.ndarray,
 ) -> None:
     k = chunk_group.shape[0] - 1
-    for t in numba.prange(k):
+    for t in numba.prange(k):  # ty: ignore[not-iterable]
         pos = chunk_byte[t]
         for g in range(chunk_group[t], chunk_group[t + 1]):
             start, end = value_ptr[g], value_ptr[g + 1]
@@ -220,7 +220,7 @@ def _unpack_parallel(value_ptr: np.ndarray, buf: np.ndarray, out: np.ndarray, n_
             chunk_group[t] = g
             chunk_byte[t] = real_starts[t]
         else:
-            extra = int(value_ptr[g + 1] - target)
+            extra = np.int64(value_ptr[g + 1] - target)
             chunk_group[t] = g + 1
             chunk_byte[t] = _advance_n_varints(buf, real_starts[t], extra)
 
@@ -230,7 +230,7 @@ def _unpack_parallel(value_ptr: np.ndarray, buf: np.ndarray, out: np.ndarray, n_
 def _num_chunks(n_bytes: int) -> int:
     if n_bytes < _PARALLEL_MIN_BYTES:
         return 1
-    return max(1, min(numba.config.NUMBA_NUM_THREADS, n_bytes // _MIN_CHUNK_BYTES))
+    return max(1, min(numba.get_num_threads(), n_bytes // _MIN_CHUNK_BYTES))
 
 
 def unpack_indices(value_ptr: np.ndarray, packed: np.ndarray, dtype: np.dtype) -> np.ndarray:

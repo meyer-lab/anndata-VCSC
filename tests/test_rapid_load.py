@@ -51,10 +51,11 @@ def test_matches_reference_normalization(tmp_path, rng, min_cell_counts, gene_th
     result = load_and_normalize(
         path, min_cell_counts=min_cell_counts, gene_threshold=gene_threshold
     )
-    ref_X, ref_cells, ref_genes = _reference_prepare(dense, min_cell_counts, gene_threshold)
+    ref_X, _, _ = _reference_prepare(dense, min_cell_counts, gene_threshold)
 
     assert isinstance(result, ad.AnnData)
     assert result.shape == ref_X.shape
+    assert isinstance(result.X, sp.csr_array)
     np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
 
 
@@ -79,11 +80,11 @@ def test_metadata_sliced_correctly(tmp_path, rng):
 
     obs = pd.DataFrame(
         {"cell_type": [f"type_{i % 3}" for i in range(n_cells)], "batch": range(n_cells)},
-        index=[f"cell_{i}" for i in range(n_cells)],
+        index=pd.Index([f"cell_{i}" for i in range(n_cells)]),
     )
     var = pd.DataFrame(
         {"gene_symbol": [f"SYM_{j}" for j in range(n_genes)]},
-        index=[f"gene_{j}" for j in range(n_genes)],
+        index=pd.Index([f"gene_{j}" for j in range(n_genes)]),
     )
     obsm = {"pca": rng.random((n_cells, 5))}
     varm = {"loadings": rng.random((n_genes, 3))}
@@ -135,4 +136,5 @@ def test_metadata_sliced_correctly(tmp_path, rng):
     assert result.uns == uns
 
     # Check X
+    assert isinstance(result.X, sp.csr_array)
     np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)

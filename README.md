@@ -13,46 +13,116 @@ matrices, e.g. single-cell RNA-seq counts.
 
 ## Install
 
+Install from source or via package manager:
+
 ```sh
-uv sync
+pip install git+https://github.com/meyer-lab/anndata-VCSC.git
+# or with uv
+uv add git+https://github.com/meyer-lab/anndata-VCSC.git
+```
+
+For local development:
+
+```sh
+git clone https://github.com/meyer-lab/anndata-VCSC.git
+cd anndata-VCSC
+uv sync --all-extras --dev
 ```
 
 ## Quickstart
 
+### Working with VCSC / VCSR arrays
+
+```python
+import vcsc
+import scipy.sparse as sp
+
+# Build from an AnnData object or SciPy sparse array
+adata = ...  # an AnnData object
+v = vcsc.from_anndata(adata)                   # VCSCArray (column-compressed) from adata.X
+vr = vcsc.from_anndata(adata, format="csr")    # VCSRArray (row-compressed)
+
+# Alternatively from scipy sparse matrices
+csc = sp.csc_array(adata.X)
+v = vcsc.VCSCArray.from_scipy(csc)
+
+# Transposition is zero-copy (swaps major/minor axes and shares buffers)
+vr = v.T                                       # VCSRArray
+
+# Scalar arithmetic & math
+v2 = v * 2.0                                   # Scalar multiplication
+v_div = v / 2.0                                # Scalar division
+v_neg = -v                                     # Negation
+v_log = v.log1p()                              # Elementwise log1p
+
+# Matrix & vector products (Numba-parallelized)
+y = v @ x                                      # Matrix-vector: (n_rows, n_cols) @ (n_cols,) -> (n_rows,)
+y_left = x @ v                                 # Vector-matrix: (n_rows,) @ (n_rows, n_cols) -> (n_cols,)
+Y = v @ B                                      # Matrix-matrix: (n_rows, n_cols) @ (n_cols, k) -> (n_rows, k)
+Y_left = B @ v                                 # Matrix-matrix: (k, n_rows) @ (n_rows, n_cols) -> (k, n_cols)
+
+# Slicing
+col_slice = v[:, [1, 3, 5]]                    # Fast major-axis slicing (returns VCSCArray)
+sub = v[0:10, 0:10]                            # 2D slicing (falls back to scipy)
+
+# Conversion & layers
+sp_csc = v.to_scipy()                          # -> scipy.sparse.csc_array (or to_csr())
+dense = v.toarray()                            # -> numpy.ndarray
+vcsc.to_layer(adata, v, key="counts_vcsc")     # Attach to AnnData layer
+```
+
+### `VCSCAnnData`: AnnData with direct VCSC/VCSR backing
+
+`vcsc.VCSCAnnData` is an `AnnData` subclass whose `X` (and optionally `raw_X`) is backed directly by a `VCSCArray` or `VCSRArray`:
+
 ```python
 import vcsc
 
-adata = ...  # an AnnData object
-v = vcsc.from_anndata(adata)     # VCSCArray, from adata.X
-v.T                                # transpose -> VCSRArray, free (shared buffers)
-v * 2.0                            # scalar multiplication
-v.log1p()                          # elementwise log1p
-v @ x                              # matrix-vector product
-v.to_scipy()                       # decompress back to scipy.sparse.csc_array
+va = vcsc.VCSCAnnData.from_anndata(adata)      # Compresses X and raw.X
+va.X                                           # VCSCArray
+va.raw_X                                       # VCSCArray (separate from anndata's .raw)
 
-# Or hold X (and raw.X) directly as a VCSCArray on an AnnData subclass:
-va = vcsc.VCSCAnnData.from_anndata(adata)
-va.write_h5ad("compressed.h5ad")             # read back with VCSCAnnData.read_h5ad
-plain = va.to_anndata()                      # escape hatch back to a normal AnnData
+# Persist to HDF5 (.h5ad) or Zarr with default Blosc2+LZ4 compression
+va.write_h5ad("compressed.h5ad")               # Read back with VCSCAnnData.read_h5ad
+va2 = vcsc.VCSCAnnData.read_h5ad("compressed.h5ad")
+
+va.write_zarr("compressed.zarr")               # Read back with VCSCAnnData.read_zarr
+va3 = vcsc.VCSCAnnData.read_zarr("compressed.zarr")
+
+# Escape hatch back to standard AnnData
+plain = va.to_anndata()
 ```
 
-`write_h5ad`/`write_zarr` compress every array with Blosc2+LZ4 by default (pass
-`dataset_kwargs={}` to disable, or your own `dataset_kwargs` to override).
+### Byte-Packed On-Disk Format (IVCSC / IVCSR)
 
-For smaller files at the cost of extra work on write/read, pass
-`format="ivcsc"` to store the IVCSC/IVCSR on-disk format instead -- the same
-VCSC/VCSR layout, but with the minor-axis indices delta+varint byte-packed
-(inspired by [IVSparse's IVCSC](https://github.com/Seth-Wolfgang/IVSparse)).
-It's purely a storage format: `read_h5ad`/`read_zarr` always hand back an
-ordinary VCSCArray/VCSRArray, decompressed from IVCSC/IVCSR immediately on
-load.
+For smaller files, pass `format="ivcsc"` (or `"ivcsr"`) on write. This byte-packs the minor-axis indices with delta + varint encoding (inspired by [IVSparse's IVCSC](https://github.com/Seth-Wolfgang/IVSparse)).
+
+It is purely an archival storage format: `read_h5ad` / `read_zarr` decompress the indices on load and return a standard `VCSCArray`/`VCSRArray`.
 
 ```python
+# Write delta+varint byte-packed indices
 va.write_h5ad("archived.h5ad", format="ivcsc")
-vcsc.VCSCAnnData.read_h5ad("archived.h5ad")  # X is a plain VCSCArray again
+
+# Reads back directly as an ordinary VCSCAnnData
+va_loaded = vcsc.VCSCAnnData.read_h5ad("archived.h5ad")
 ```
 
-See `docs/` for full usage and API documentation.
+### Fast Filtering & Depth Normalization (`load_and_normalize`)
+
+For IVCSR-backed datasets, `vcsc.load_and_normalize` bypasses full array decompression for rapid preprocessing, reproducing the filtering and depth normalization from `parafac2.normalize.prepare_dataset`:
+
+- **Cell filtering without decoding**: Computes cell totals in $O(n_{\text{unique}})$ time directly from group sizes without unpacking varint indices.
+- **Fused filter & normalization**: Performs gene filtering, cell/gene depth-scaling, and $\log_{10}(1000x + 1)$ transform in parallel passes over the compact CSR representation.
+
+```python
+adata_norm = vcsc.load_and_normalize(
+    "archived.h5ad",
+    min_cell_counts=10.0,      # Filter cells with counts <= 10
+    gene_threshold=0.05,       # Filter genes with counts <= 0.05 * n_cells
+)
+```
+
+See `docs/` for full usage guides and API documentation.
 
 ## Development
 

@@ -107,7 +107,7 @@ def _numeric_only_zarr() -> Iterator[None]:
     from anndata.compat import is_zarr_v2
 
     if is_zarr_v2():
-        original = zarr.Group.create_dataset
+        original = zarr.Group.create_dataset  # ty: ignore[deprecated]
         keys = _ZARR_V2_COMPRESSION_KEYS
 
         def patched(self: zarr.Group, name: str, **kwargs: Any) -> Any:
@@ -120,7 +120,7 @@ def _numeric_only_zarr() -> Iterator[None]:
         try:
             yield
         finally:
-            zarr.Group.create_dataset = original
+            zarr.Group.create_dataset = original  # ty: ignore[deprecated]
         return
 
     original = zarr.Group.create_array

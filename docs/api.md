@@ -17,6 +17,8 @@
 
 .. autofunction:: vcsc.to_layer
 
+.. autofunction:: vcsc.load_and_normalize
+
 .. autoclass:: vcsc.VCSCAnnData
    :members:
    :undoc-members:
