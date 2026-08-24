@@ -1,8 +1,6 @@
 """Parallel numba kernels for ``VCSCArrayNormalized``/``VCSRArrayNormalized`` @ dense.
 
-Same algebraic decomposition as :mod:`vcsc._ivcs_matmul` (see its module
-docstring for the derivation): for row-scale ``r``, gene-scale ``g``, and
-centering ``c = col_mean``,
+For row-scale ``r``, gene-scale ``g``, and centering ``c = col_mean``,
 
     A_norm = broadcast_rows(-c) + Delta,   Delta[i, j] = log10(1 + 1000 * raw[i, j] / r[i] / g[j])
 

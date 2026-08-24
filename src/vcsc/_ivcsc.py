@@ -197,9 +197,8 @@ def _group_chunk_boundaries(
 
     Returns ``(chunk_group, chunk_byte)``, each of length ``n_chunks + 1``:
     chunk ``t`` owns groups ``[chunk_group[t], chunk_group[t + 1])``, whose
-    packed bytes start at ``chunk_byte[t]``. Shared by :func:`_unpack_parallel`
-    (decoding) and by :mod:`vcsc._ivcs_matmul` (fused decode-and-multiply),
-    which both need this same group-aligned chunking to parallelize safely.
+    packed bytes start at ``chunk_byte[t]``. Used by :func:`_unpack_parallel`
+    to parallelize decoding safely.
     """
     n_bytes = buf.shape[0]
     n_groups = value_ptr.shape[0] - 1

@@ -10,15 +10,12 @@ from vcsc._anndata import from_anndata, to_layer
 from vcsc._anndata_class import VCSCAnnData
 from vcsc._base import VCSCArray, VCSRArray
 from vcsc._ivcs import IVCSCArray, IVCSRArray
-from vcsc._ivcs_norm import IVCSCArrayNormalized, IVCSRArrayNormalized
 from vcsc._rapid_load import load_and_normalize, load_packed
 from vcsc._vcs_norm import VCSCArrayNormalized, VCSRArrayNormalized
 
 __all__ = [
     "IVCSCArray",
-    "IVCSCArrayNormalized",
     "IVCSRArray",
-    "IVCSRArrayNormalized",
     "VCSCAnnData",
     "VCSCArray",
     "VCSCArrayNormalized",

@@ -7,8 +7,7 @@ load_and_normalize` builds -- without ever materializing it. See
 :mod:`vcsc._norm_common` for the shared statistics/materialization logic
 (:class:`~vcsc._norm_common.NormalizedViewBase`) and :mod:`vcsc._vcs_matmul`
 for the matmul kernels these use (a direct per-nonzero walk over the
-already-decoded ``indices`` array -- no byte-stream decoding is needed here,
-unlike the IVCSC/IVCSR wrappers in :mod:`vcsc._ivcs_norm`).
+already-decoded ``indices`` array).
 """
 
 from __future__ import annotations

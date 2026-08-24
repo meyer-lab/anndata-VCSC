@@ -1,14 +1,13 @@
 """Shared statistics/materialization logic for normalized VCS views.
 
-:mod:`vcsc._ivcs_norm` (:class:`~vcsc.IVCSCArrayNormalized`/:class:`~vcsc.
-IVCSRArrayNormalized`) and :mod:`vcsc._vcs_norm` (:class:`~vcsc.
-VCSCArrayNormalized`/:class:`~vcsc.VCSRArrayNormalized`) wrap a raw VCS-family
-array and behave like the read-depth-normalized, log-transformed,
-mean-centered matrix that :func:`vcsc._rapid_load.load_and_normalize` builds
--- without ever materializing it. Centering makes every implicit structural
-zero a nonzero value, so a real materialization is an ``n_rows * n_cols``
-dense array; the whole point of a "view" here is to avoid paying for that
-until (and unless) the caller actually asks for it.
+:mod:`vcsc._vcs_norm` (:class:`~vcsc.VCSCArrayNormalized`/:class:`~vcsc.
+VCSRArrayNormalized`) wraps a raw VCS array and behaves like the
+read-depth-normalized, log-transformed, mean-centered matrix that
+:func:`vcsc._rapid_load.load_and_normalize` builds -- without ever
+materializing it. Centering makes every implicit structural zero a nonzero
+value, so a real materialization is an ``n_rows * n_cols`` dense array; the
+whole point of a "view" here is to avoid paying for that until (and unless)
+the caller actually asks for it.
 
 What's precomputed, once, at construction:
 
@@ -29,26 +28,21 @@ themselves still requires touching every nonzero (twice: once for
 implementation -- so that part is done with parallel numba kernels below,
 specialized per storage format:
 
-- major=columns (VCSC/IVCSC): both passes collapse into one, fully parallel
+- major=columns (VCSC): both passes collapse into one, fully parallel
   over columns with no cross-thread writes -- each column's own elements
   carry everything needed to compute both its ``gene_scale`` and its
   ``col_mean`` (:func:`_column_stats_major_is_col`).
-- major=rows (VCSR/IVCSR): each pass is a scatter-add across columns from
+- major=rows (VCSR): each pass is a scatter-add across columns from
   many rows, so it's parallelized like :mod:`vcsc._rapid_load`'s
   ``_scaled_col_sums`` -- row-chunked with thread-local partial column
   arrays, reduced by summing across threads (:func:`_scaled_col_sums_vcs`,
   :func:`_transformed_col_sums_vcs`).
 
 These kernels only need ``major_ptr``/``values``/``value_ptr``/``indices``
-arrays -- true of both the plain (:mod:`vcsc._base`) and byte-packed
-(:mod:`vcsc._ivcs`) array types alike (the latter via its decoded,
-cached ``.indices`` property) -- so :class:`NormalizedViewBase` here, and
-these kernels, are shared verbatim by both wrapper families. Only the
-matmul kernels differ per family: :mod:`vcsc._ivcs_matmul` decodes the
-byte-packed index stream inline while multiplying, whereas :mod:`vcsc.
-_vcs_matmul` walks the already-materialized ``indices`` array directly. Each
-concrete ``*Normalized`` class supplies its own ``__matmul__``/
-``__rmatmul__`` wired to the matching kernel module.
+arrays, from the plain (:mod:`vcsc._base`) array types. The matmul kernels
+in :mod:`vcsc._vcs_matmul` walk that same already-materialized ``indices``
+array directly. :class:`VCSCArrayNormalized`/:class:`VCSRArrayNormalized`
+each supply their own ``__matmul__``/``__rmatmul__`` wired to those kernels.
 """
 
 from __future__ import annotations
@@ -181,11 +175,10 @@ def _prep_key(key: Any) -> Any:
 
 
 class NormalizedViewBase:
-    """Shared implementation for the normalized VCSC/VCSR and IVCSC/IVCSR views.
+    """Shared implementation for the normalized VCSC/VCSR views.
 
     Subclasses fix ``_format`` (``"csc"``/``"csr"``) and supply
-    ``__matmul__``/``__rmatmul__`` wired to their family's matmul kernels
-    (:mod:`vcsc._vcs_matmul` or :mod:`vcsc._ivcs_matmul`).
+    ``__matmul__``/``__rmatmul__`` wired to :mod:`vcsc._vcs_matmul`.
     """
 
     _format: str

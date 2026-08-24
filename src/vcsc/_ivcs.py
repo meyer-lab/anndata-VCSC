@@ -293,13 +293,6 @@ class _IVCSBase:
         sub = self.to_scipy()[row_key, col_key]
         return type(self).from_scipy(sub)
 
-    def normalized(self) -> Any:
-        """A read-depth-normalized, log-transformed, mean-centered *view* -- see :mod:`vcsc._ivcs_norm`."""
-        from vcsc._ivcs_norm import IVCSCArrayNormalized, IVCSRArrayNormalized
-
-        cls = IVCSCArrayNormalized if self._format == "csc" else IVCSRArrayNormalized
-        return cls(self)
-
     # -- explicitly-unsupported operations ------------------------------------
 
     def _unsupported(self, op: str) -> Any:
