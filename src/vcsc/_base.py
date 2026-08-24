@@ -18,12 +18,10 @@ import numpy as np
 import scipy.sparse as sp
 
 from vcsc import _construct, _ops
+from vcsc._indexutils import is_full_slice as _is_full_slice
+from vcsc._indexutils import normalize_major_idx as _normalize_major_idx
 
 __all__ = ["VCSCArray", "VCSRArray"]
-
-
-def _is_full_slice(key: Any) -> bool:
-    return isinstance(key, slice) and key.start is None and key.stop is None and key.step is None
 
 
 class _VCSBase:
@@ -167,6 +165,28 @@ class _VCSBase:
     def transpose(self) -> _VCSBase:
         return self.T
 
+    def _transpose_major(self) -> _VCSBase:
+        """Convert to the other VCS format (VCSC<->VCSR) of the *same* shape.
+
+        Unlike :attr:`T` (free: reinterprets the same buffers as the
+        transposed matrix), this physically re-groups the stored values by
+        the other axis -- see :func:`vcsc._construct.transpose_major`. Used
+        to give a major-aligned (parallel-safe, no scatter) kernel something
+        to run against, in the direction the array wasn't built for.
+        """
+        other_cls = VCSRArray if self._format == "csc" else VCSCArray
+        major_ptr, values, value_ptr, indices = _construct.transpose_major(
+            self.major_ptr, self.values, self.value_ptr, self.indices, self.n_minor
+        )
+        return other_cls(self.shape, major_ptr, values, value_ptr, indices)
+
+    def normalized(self) -> Any:
+        """A read-depth-normalized, log-transformed, mean-centered *view* -- see :mod:`vcsc._vcs_norm`."""
+        from vcsc._vcs_norm import VCSCArrayNormalized, VCSRArrayNormalized
+
+        cls = VCSCArrayNormalized if self._format == "csc" else VCSRArrayNormalized
+        return cls(self)
+
     def log1p(self) -> _VCSBase:
         """Elementwise ``log1p``. Structural zeros stay zero implicitly."""
         return type(self)(
@@ -176,6 +196,34 @@ class _VCSBase:
             self.value_ptr.copy(),
             self.indices.copy(),
         )
+
+    # -- reductions -----------------------------------------------------------
+
+    def _major_sums(self) -> np.ndarray:
+        """Per-major-slice totals -- cheap, doesn't touch ``indices``."""
+        group_sizes = np.diff(self.value_ptr)
+        weighted = self.values.astype(np.float64) * group_sizes
+        group_of_major = np.repeat(np.arange(self.n_major, dtype=np.int64), np.diff(self.major_ptr))
+        return np.bincount(group_of_major, weights=weighted, minlength=self.n_major)
+
+    def _minor_sums(self) -> np.ndarray:
+        """Per-minor-index totals -- a scatter-add over every nonzero."""
+        group_sizes = np.diff(self.value_ptr)
+        expanded = np.repeat(self.values.astype(np.float64), group_sizes)
+        return np.bincount(self.indices, weights=expanded, minlength=self.n_minor)
+
+    def sum(self, axis: int | None = None) -> np.ndarray | float:
+        """Sum of (structural) values along ``axis`` (0=rows, 1=columns), or overall if ``None``."""
+        if axis is None:
+            group_sizes = np.diff(self.value_ptr)
+            return float(np.sum(self.values.astype(np.float64) * group_sizes))
+        if axis not in (0, 1):
+            raise ValueError(f"axis must be None, 0, or 1, got {axis!r}")
+        # axis=0 reduces over rows (column totals); axis=1 reduces over
+        # columns (row totals). Major-slice totals are column totals for
+        # VCSC (major=columns) and row totals for VCSR (major=rows).
+        major_axis = 0 if self._format == "csc" else 1
+        return self._major_sums() if axis == major_axis else self._minor_sums()
 
     # -- scalar arithmetic --------------------------------------------------
 
@@ -284,30 +332,8 @@ class _VCSBase:
 
     # -- indexing -------------------------------------------------------------
 
-    def _normalize_major_idx(self, key: Any) -> np.ndarray:
-        n_major = self.n_major
-        if isinstance(key, slice):
-            return np.arange(*key.indices(n_major))
-        if isinstance(key, int | np.integer):
-            idx = int(key)
-            if idx < 0:
-                idx += n_major
-            if not (0 <= idx < n_major):
-                raise IndexError(f"index {key} out of bounds for axis of size {n_major}")
-            return np.array([idx])
-        arr = np.asarray(key)
-        if arr.dtype == bool:
-            if arr.shape[0] != n_major:
-                raise IndexError("boolean index does not match major axis length")
-            return np.nonzero(arr)[0]
-        arr = arr.astype(np.int64)
-        arr = np.where(arr < 0, arr + n_major, arr)
-        if arr.size and ((arr < 0).any() or (arr >= n_major).any()):
-            raise IndexError("index out of bounds for major axis")
-        return arr
-
     def _select_major(self, key: Any) -> _VCSBase:
-        idx = self._normalize_major_idx(key)
+        idx = _normalize_major_idx(key, self.n_major)
         starts = self.major_ptr[idx]
         ends = self.major_ptr[idx + 1]
         counts = ends - starts

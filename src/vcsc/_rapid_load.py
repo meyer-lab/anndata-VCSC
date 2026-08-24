@@ -57,11 +57,12 @@ import numpy as np
 from scipy.sparse import csr_array
 
 from vcsc import _ivcsc
+from vcsc._anndata_class import VCSCAnnData
 
 if TYPE_CHECKING:
     from os import PathLike
 
-__all__ = ["load_and_normalize"]
+__all__ = ["load_and_normalize", "load_packed"]
 
 
 # -- group-level (no-decode) cell totals -------------------------------------
@@ -364,3 +365,29 @@ def load_and_normalize(
     adata.X = X
 
     return adata
+
+
+def load_packed(path: str | PathLike[str], *, x_key: str = "X") -> VCSCAnnData:
+    """Load an IVCSR/IVCSC-backed ``.h5ad`` file, decoding ``X`` immediately.
+
+    Unlike :func:`load_and_normalize`, this does no filtering or
+    normalization -- ``X`` comes back as an ordinary VCSCArray/VCSRArray with
+    plain ``indices``, decoded from the packed bytes read from disk.
+
+    Parameters
+    ----------
+    path
+        Path to an ``.h5ad`` file whose ``X`` (or a top-level group named
+        ``x_key``) was written with ``format="ivcsc"``/``"ivcsr"`` (see
+        :meth:`~vcsc.VCSCAnnData.write_h5ad`).
+    x_key
+        Top-level h5ad group holding the IVCSR/IVCSC array (``"X"`` by default).
+    """
+    import h5py
+    import hdf5plugin  # noqa: F401  -- registers the Blosc2 HDF5 filter
+
+    with h5py.File(Path(path), "r") as f:
+        X = ad.io.read_elem(f[x_key])
+        kwargs = {k: ad.io.read_elem(f[k]) for k in _FIELD_KEYS if k in f}
+
+    return VCSCAnnData(X=X, **kwargs)  # ty: ignore[invalid-argument-type]

@@ -20,10 +20,43 @@ if TYPE_CHECKING:
 __all__ = ["VCSCAnnData"]
 
 _VCS_TYPES = (VCSCArray, VCSRArray)
+_AnyVCS = _VCSBase
 _DF_KEYS = ("obs", "var")
 _MAPPING_KEYS = ("obsm", "varm", "obsp", "varp", "layers", "uns")
 _FIELD_KEYS = (*_DF_KEYS, *_MAPPING_KEYS)
 _STORE_FORMATS = ("vcsc", "ivcsc")
+
+
+def _as_slice_index(idx: Any, n: int) -> Any:
+    """Turn a bare int index into a length-1 slice, matching anndata's own convention."""
+    if isinstance(idx, int | np.integer):
+        i = int(idx)
+        if i < 0:
+            i += n
+        return slice(i, i + 1, 1)
+    return idx
+
+
+def _subset_1d(v: Any, idx: Any) -> Any:
+    if isinstance(v, pd.DataFrame):
+        return v.iloc[idx]
+    return v[idx]
+
+
+def _subset_2d(v: Any, oidx: Any, vidx: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, _VCS_TYPES):
+        result = v[oidx, vidx]
+        # VCSCArray/VCSRArray fall back to a plain scipy array for general
+        # (both-axes) indexing (see _VCSBase.__getitem__); re-wrap so X/raw_X
+        # stay VCS-backed the way the rest of this class requires.
+        if not isinstance(result, _VCS_TYPES):
+            result = type(v).from_scipy(result)
+        return result
+    if sp.issparse(v):
+        return v[oidx, :][:, vidx]
+    return np.asarray(v)[oidx][:, vidx]
 
 
 def _check_vcs_type(value: Any, name: str) -> None:
@@ -45,11 +78,13 @@ class VCSCAnnData(ad.AnnData):
     is kept as ``.raw_X`` -- a plain attribute, *not* wired into anndata's own
     ``.raw``/``Raw`` machinery, which has the same restriction.
 
-    Because of this, operations that need anndata's normal per-element type
-    dispatch on ``X`` -- slicing into views, concatenation, most of
-    scanpy/anndata's ecosystem -- are **not** supported while ``X`` is
-    VCSC/VCSR-backed. Call :meth:`to_anndata` first to get a fully-featured,
-    ordinary ``AnnData``.
+    Because of this, most operations that need anndata's normal per-element
+    type dispatch on ``X`` -- concatenation, most of scanpy/anndata's
+    ecosystem -- are **not** supported while ``X`` is VCSC/VCSR-backed. Call
+    :meth:`to_anndata` first to get a fully-featured, ordinary
+    ``AnnData``. Indexing (``adata[obs_idx, var_idx]``) *is* supported (see
+    :meth:`__getitem__`), but always as an eager copy, not a lazy view --
+    anndata's view machinery bypasses the ``X``/``raw_X`` overrides here.
 
     Persist with :meth:`write_h5ad`/:meth:`write_zarr` and
     :meth:`read_h5ad`/:meth:`read_zarr` (not the top-level
@@ -59,9 +94,9 @@ class VCSCAnnData(ad.AnnData):
 
     def __init__(
         self,
-        X: _VCSBase | None = None,
+        X: _AnyVCS | None = None,
         *,
-        raw_X: _VCSBase | None = None,
+        raw_X: _AnyVCS | None = None,
         **kwargs: Any,
     ) -> None:
         _check_vcs_type(X, "X")
@@ -70,8 +105,8 @@ class VCSCAnnData(ad.AnnData):
             raise TypeError(
                 "VCSCAnnData does not support the standard `raw=` argument; pass `raw_X=` instead."
             )
-        self._vcs_X: _VCSBase | None = None
-        self._vcs_raw_X: _VCSBase | None = None
+        self._vcs_X: _AnyVCS | None = None
+        self._vcs_raw_X: _AnyVCS | None = None
         shape = kwargs.pop("shape", None)
         if shape is None and X is None and "obs" not in kwargs:
             shape = (0, 0)
@@ -84,7 +119,7 @@ class VCSCAnnData(ad.AnnData):
     # -- X / raw_X ------------------------------------------------------------
 
     @property
-    def X(self) -> _VCSBase | None:
+    def X(self) -> _AnyVCS | None:
         return self._vcs_X
 
     @X.setter
@@ -100,7 +135,7 @@ class VCSCAnnData(ad.AnnData):
         self._vcs_X = value
 
     @property
-    def raw_X(self) -> _VCSBase | None:
+    def raw_X(self) -> _AnyVCS | None:
         """The raw/X matrix, as a VCSCArray/VCSRArray (see class docstring)."""
         return self._vcs_raw_X
 
@@ -113,6 +148,38 @@ class VCSCAnnData(ad.AnnData):
             else:
                 _check_vcs_type(value, "raw_X")
         self._vcs_raw_X = value
+
+    # -- indexing / view creation ---------------------------------------------
+
+    def __getitem__(self, index: Any) -> VCSCAnnData:  # ty: ignore[invalid-method-override]
+        """Subset by obs/var index (labels, ints, slices, boolean masks), as with plain AnnData.
+
+        Unlike plain AnnData, this always returns a new, eagerly-copied
+        object rather than a lazy, memory-sharing view -- anndata's built-in
+        view machinery slices the private ``_X`` attribute directly, which
+        this class doesn't use (see the class docstring), so it can't be
+        reused here. ``X``/``raw_X`` stay VCSC/VCSR-backed either way, via
+        that array type's own indexing.
+        """
+        oidx, vidx = self._normalize_indices(index)
+        oidx = _as_slice_index(oidx, self.n_obs)
+        vidx = _as_slice_index(vidx, self.n_vars)
+
+        obs = cast(pd.DataFrame, self.obs).iloc[oidx].copy()
+        var = cast(pd.DataFrame, self.var).iloc[vidx].copy()
+
+        return VCSCAnnData(
+            X=_subset_2d(self._vcs_X, oidx, vidx),
+            raw_X=_subset_2d(self._vcs_raw_X, oidx, vidx),
+            obs=obs,
+            var=var,
+            uns=self.uns,
+            obsm={k: _subset_1d(v, oidx) for k, v in self.obsm.items() if k is not None},
+            varm={k: _subset_1d(v, vidx) for k, v in self.varm.items() if k is not None},
+            obsp={k: _subset_2d(v, oidx, oidx) for k, v in self.obsp.items() if k is not None},
+            varp={k: _subset_2d(v, vidx, vidx) for k, v in self.varp.items() if k is not None},
+            layers={k: _subset_2d(v, oidx, vidx) for k, v in self.layers.items() if k is not None},
+        )
 
     # -- conversion -------------------------------------------------------------
 
@@ -200,8 +267,8 @@ class VCSCAnnData(ad.AnnData):
         # they were stored "vcsc" or "ivcsc" -- the registry dispatches on the
         # encoding-type attr each group was written with, not on how it's read.
         kwargs = {k: ad.io.read_elem(g[k]) for k in _FIELD_KEYS if k in g}
-        X = cast("_VCSBase | None", ad.io.read_elem(g["X"]) if "X" in g else None)
-        raw_X = cast("_VCSBase | None", ad.io.read_elem(g["raw_X"]) if "raw_X" in g else None)
+        X = cast("_AnyVCS | None", ad.io.read_elem(g["X"]) if "X" in g else None)
+        raw_X = cast("_AnyVCS | None", ad.io.read_elem(g["raw_X"]) if "raw_X" in g else None)
         return cls(X=X, raw_X=raw_X, **kwargs)
 
     def write_h5ad(  # ty: ignore[invalid-method-override]

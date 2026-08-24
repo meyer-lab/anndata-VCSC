@@ -102,7 +102,7 @@ def write_ivcs_elem(
         ad.io.write_elem(g, name, getattr(v, name), dataset_kwargs=dataset_kwargs)
     packed = _ivcsc.pack_indices(v.value_ptr, v.indices)
     ad.io.write_elem(g, "packed_indices", packed, dataset_kwargs=dataset_kwargs)
-    g.attrs["encoding-type"] = _IVCS_SPEC_NAMES[type(v)]
+    g.attrs["encoding-type"] = "ivcsc" if v._format == "csc" else "ivcsr"
     g.attrs["encoding-version"] = _IVCS_SPEC_VERSION
 
 
