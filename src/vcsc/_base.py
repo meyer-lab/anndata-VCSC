@@ -165,6 +165,13 @@ class _VCSBase:
     def transpose(self) -> _VCSBase:
         return self.T
 
+    def normalized(self) -> Any:
+        """A read-depth-normalized, log-transformed, mean-centered *view* -- see :mod:`vcsc._vcs_norm`."""
+        from vcsc._vcs_norm import VCSCArrayNormalized, VCSRArrayNormalized
+
+        cls = VCSCArrayNormalized if self._format == "csc" else VCSRArrayNormalized
+        return cls(self)
+
     def log1p(self) -> _VCSBase:
         """Elementwise ``log1p``. Structural zeros stay zero implicitly."""
         return type(self)(
