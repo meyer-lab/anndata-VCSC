@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vcsc import IVCSRArray, VCSCAnnData
+from vcsc import VCSCAnnData, VCSRArray
 from vcsc._rapid_load import load_and_normalize, load_packed
 
 
@@ -179,8 +179,8 @@ def test_rapid_load_custom_x_key(tmp_path, rng):
     assert result.shape == dense.shape
 
 
-def test_load_packed_keeps_x_byte_packed(tmp_path, rng):
-    """load_packed is the alternative route: no filtering/normalization, X stays packed."""
+def test_load_packed_decodes_x(tmp_path, rng):
+    """load_packed is the alternative route: no filtering/normalization, X decoded eagerly."""
     dense = rng.integers(0, 8, size=(20, 12)).astype(np.float64)
     dense[rng.random(dense.shape) < 0.4] = 0.0
     path = _write_ivcsr(tmp_path, dense)
@@ -188,8 +188,7 @@ def test_load_packed_keeps_x_byte_packed(tmp_path, rng):
     result = load_packed(path)
 
     assert isinstance(result, VCSCAnnData)
-    assert isinstance(result.X, IVCSRArray)
-    assert result.X._indices_cache is None
+    assert isinstance(result.X, VCSRArray)
     assert result.shape == dense.shape
     np.testing.assert_allclose(result.X.toarray(), dense)
 

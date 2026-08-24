@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vcsc import IVCSRArray, VCSCAnnData, VCSCArray, VCSRArray
+from vcsc import VCSCAnnData, VCSCArray, VCSRArray
 
 
 @pytest.fixture
@@ -247,15 +247,4 @@ def test_getitem_single_int_row(base_adata, dense):
     sub = va[0, :]
     assert sub.shape == (1, dense.shape[1])
     np.testing.assert_allclose(sub.X.toarray(), dense[0:1])
-
-
-def test_getitem_with_ivcs_x(base_adata, dense):
-    """Indexing works the same when X is an IVCSCArray/IVCSRArray."""
-    if dense.shape[0] < 3 or dense.shape[1] < 3:
-        pytest.skip("shape too small")
-    v = IVCSRArray.from_scipy(sp.csr_array(dense))
-    va = VCSCAnnData(X=v, obs=base_adata.obs.copy(), var=base_adata.var.copy())
-    sub = va[1:3, [0, 2]]
-    assert isinstance(sub.X, IVCSRArray)
-    np.testing.assert_allclose(sub.X.toarray(), dense[1:3][:, [0, 2]])
 

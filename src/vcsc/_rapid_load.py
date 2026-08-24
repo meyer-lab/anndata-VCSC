@@ -56,7 +56,7 @@ import numba
 import numpy as np
 from scipy.sparse import csr_array
 
-from vcsc import _io, _ivcsc
+from vcsc import _ivcsc
 from vcsc._anndata_class import VCSCAnnData
 
 if TYPE_CHECKING:
@@ -368,15 +368,11 @@ def load_and_normalize(
 
 
 def load_packed(path: str | PathLike[str], *, x_key: str = "X") -> VCSCAnnData:
-    """Load an IVCSR/IVCSC-backed ``.h5ad`` file, staying byte-packed the whole time.
+    """Load an IVCSR/IVCSC-backed ``.h5ad`` file, decoding ``X`` immediately.
 
     Unlike :func:`load_and_normalize`, this does no filtering or
-    normalization, and never decodes the packed ``indices`` -- ``X`` comes
-    back as an :class:`~vcsc.IVCSCArray`/:class:`~vcsc.IVCSRArray` holding
-    the exact bytes read from disk. That makes this the cheap alternative
-    when all you need is to hold the data (indexing, subsetting, and
-    per-axis read sums are supported -- see :mod:`vcsc._ivcs`); call
-    ``.to_vcs()`` or ``.to_scipy()`` on the result's ``X`` for anything else.
+    normalization -- ``X`` comes back as an ordinary VCSCArray/VCSRArray with
+    plain ``indices``, decoded from the packed bytes read from disk.
 
     Parameters
     ----------
@@ -391,9 +387,7 @@ def load_packed(path: str | PathLike[str], *, x_key: str = "X") -> VCSCAnnData:
     import hdf5plugin  # noqa: F401  -- registers the Blosc2 HDF5 filter
 
     with h5py.File(Path(path), "r") as f:
-        g = f[x_key]
-        cls = _io._PACKED_CLASSES_BY_NAME[g.attrs["encoding-type"]]
-        X = _io.read_ivcs_elem_packed(g, cls)
+        X = ad.io.read_elem(f[x_key])
         kwargs = {k: ad.io.read_elem(f[k]) for k in _FIELD_KEYS if k in f}
 
     return VCSCAnnData(X=X, **kwargs)  # ty: ignore[invalid-argument-type]

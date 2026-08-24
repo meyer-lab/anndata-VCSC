@@ -12,7 +12,6 @@ import scipy.sparse as sp
 
 from vcsc import _compression, _io
 from vcsc._base import VCSCArray, VCSRArray, _VCSBase
-from vcsc._ivcs import IVCSCArray, IVCSRArray, _IVCSBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -20,8 +19,8 @@ if TYPE_CHECKING:
 
 __all__ = ["VCSCAnnData"]
 
-_VCS_TYPES = (VCSCArray, VCSRArray, IVCSCArray, IVCSRArray)
-_AnyVCS = _VCSBase | _IVCSBase
+_VCS_TYPES = (VCSCArray, VCSRArray)
+_AnyVCS = _VCSBase
 _DF_KEYS = ("obs", "var")
 _MAPPING_KEYS = ("obsm", "varm", "obsp", "varp", "layers", "uns")
 _FIELD_KEYS = (*_DF_KEYS, *_MAPPING_KEYS)
@@ -81,8 +80,8 @@ class VCSCAnnData(ad.AnnData):
 
     Because of this, most operations that need anndata's normal per-element
     type dispatch on ``X`` -- concatenation, most of scanpy/anndata's
-    ecosystem -- are **not** supported while ``X`` is VCSC/VCSR/IVCSC/IVCSR-
-    backed. Call :meth:`to_anndata` first to get a fully-featured, ordinary
+    ecosystem -- are **not** supported while ``X`` is VCSC/VCSR-backed. Call
+    :meth:`to_anndata` first to get a fully-featured, ordinary
     ``AnnData``. Indexing (``adata[obs_idx, var_idx]``) *is* supported (see
     :meth:`__getitem__`), but always as an eager copy, not a lazy view --
     anndata's view machinery bypasses the ``X``/``raw_X`` overrides here.
@@ -159,8 +158,8 @@ class VCSCAnnData(ad.AnnData):
         object rather than a lazy, memory-sharing view -- anndata's built-in
         view machinery slices the private ``_X`` attribute directly, which
         this class doesn't use (see the class docstring), so it can't be
-        reused here. ``X``/``raw_X`` stay VCSC/VCSR/IVCSC/IVCSR-backed
-        either way, via that array type's own indexing.
+        reused here. ``X``/``raw_X`` stay VCSC/VCSR-backed either way, via
+        that array type's own indexing.
         """
         oidx, vidx = self._normalize_indices(index)
         oidx = _as_slice_index(oidx, self.n_obs)
