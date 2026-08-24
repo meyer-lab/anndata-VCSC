@@ -165,6 +165,21 @@ class _VCSBase:
     def transpose(self) -> _VCSBase:
         return self.T
 
+    def _transpose_major(self) -> _VCSBase:
+        """Convert to the other VCS format (VCSC<->VCSR) of the *same* shape.
+
+        Unlike :attr:`T` (free: reinterprets the same buffers as the
+        transposed matrix), this physically re-groups the stored values by
+        the other axis -- see :func:`vcsc._construct.transpose_major`. Used
+        to give a major-aligned (parallel-safe, no scatter) kernel something
+        to run against, in the direction the array wasn't built for.
+        """
+        other_cls = VCSRArray if self._format == "csc" else VCSCArray
+        major_ptr, values, value_ptr, indices = _construct.transpose_major(
+            self.major_ptr, self.values, self.value_ptr, self.indices, self.n_minor
+        )
+        return other_cls(self.shape, major_ptr, values, value_ptr, indices)
+
     def normalized(self) -> Any:
         """A read-depth-normalized, log-transformed, mean-centered *view* -- see :mod:`vcsc._vcs_norm`."""
         from vcsc._vcs_norm import VCSCArrayNormalized, VCSRArrayNormalized

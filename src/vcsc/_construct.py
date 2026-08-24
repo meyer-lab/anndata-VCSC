@@ -27,7 +27,7 @@ from __future__ import annotations
 import numba
 import numpy as np
 
-__all__ = ["compress", "decompress"]
+__all__ = ["compress", "decompress", "transpose_major"]
 
 
 @numba.njit(cache=True)
@@ -130,3 +130,65 @@ def decompress(
     """Invert :func:`compress`, producing standard ``indptr``/``indices``/``data``."""
     nnz = indices.shape[0]
     return _decompress(major_ptr, values, value_ptr, indices, n_major, nnz)
+
+
+def transpose_major(
+    major_ptr: np.ndarray,
+    values: np.ndarray,
+    value_ptr: np.ndarray,
+    indices: np.ndarray,
+    n_minor: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Re-group the VCS layout by the *other* axis (VCSC indices <-> VCSR indices).
+
+    This is a storage-layout conversion, not a mathematical transpose: shape
+    is unchanged, only which axis is deduplicated-by-value changes. Every
+    stored ``(old_major, value, old_minor)`` triple becomes a
+    ``(new_major=old_minor, value, new_minor=old_major)`` triple in the
+    output.
+
+    Unlike going through :func:`decompress` (expand to plain nonzeros,
+    sorting *within each major slice* to restore minor-index order) followed
+    by re-:func:`compress` (sorting *within each major slice* again to
+    re-dedupe), this does the whole regrouping as a single global
+    ``np.lexsort`` by ``(new_major, value)`` -- one vectorized C sort over
+    all ``nnz`` entries, rather than one Python-level call into a per-slice
+    sort for every one of the (potentially many thousands of) major slices
+    in each direction. That per-slice-call overhead, not the sorting itself,
+    is what makes the decompress-then-recompress route slow at scale.
+    """
+    n_major = major_ptr.shape[0] - 1
+    nnz = indices.shape[0]
+
+    if nnz == 0:
+        return (
+            np.zeros(n_minor + 1, dtype=np.int64),
+            values[:0].copy(),
+            np.zeros(1, dtype=np.int64),
+            np.empty(0, dtype=indices.dtype),
+        )
+
+    group_sizes = np.diff(value_ptr)  # nnz-count per unique (major, value) group
+    value_of_entry = np.repeat(values, group_sizes)
+    major_of_group = np.repeat(np.arange(n_major, dtype=np.int64), np.diff(major_ptr))
+    old_major_of_entry = np.repeat(major_of_group, group_sizes)  # -> new minor index
+    new_major_of_entry = np.asarray(indices)  # old minor index IS the new major
+
+    order = np.lexsort((value_of_entry, new_major_of_entry))
+    sorted_major = new_major_of_entry[order]
+    sorted_value = value_of_entry[order]
+    sorted_minor = old_major_of_entry[order]
+
+    change = np.empty(nnz, dtype=bool)
+    change[0] = True
+    change[1:] = (sorted_major[1:] != sorted_major[:-1]) | (sorted_value[1:] != sorted_value[:-1])
+    group_starts = np.flatnonzero(change)
+
+    values_out = sorted_value[group_starts]
+    value_ptr_out = np.concatenate([group_starts, [nnz]]).astype(np.int64)
+    major_ptr_out = np.searchsorted(sorted_major[group_starts], np.arange(n_minor + 1)).astype(np.int64)
+
+    minor_dtype = np.int32 if n_major <= np.iinfo(np.int32).max else np.int64
+    indices_out = sorted_minor.astype(minor_dtype, copy=False)
+
+    return major_ptr_out, values_out, value_ptr_out, indices_out

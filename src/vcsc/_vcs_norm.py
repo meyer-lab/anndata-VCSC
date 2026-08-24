@@ -13,9 +13,12 @@ unlike the IVCSC/IVCSR wrappers in :mod:`vcsc._ivcs_norm`).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vcsc._norm_common import NormalizedViewBase
+
+if TYPE_CHECKING:
+    from vcsc._base import _VCSBase
 
 __all__ = ["VCSCArrayNormalized", "VCSRArrayNormalized"]
 
@@ -23,7 +26,15 @@ __all__ = ["VCSCArrayNormalized", "VCSRArrayNormalized"]
 class _VCSNormalizedBase(NormalizedViewBase):
     """Shared implementation for :class:`VCSCArrayNormalized`/:class:`VCSRArrayNormalized`."""
 
-    __slots__ = ()
+    __slots__ = ("_dual_arr",)
+
+    def __init__(self, arr: _VCSBase) -> None:
+        super().__init__(arr)
+        # Lazily built, cached opposite-format copy of `arr` -- see
+        # vcsc._vcs_matmul._get_dual. Built at most once per view, the
+        # first time a matmul needs it in the direction `arr` isn't
+        # major-aligned for.
+        self._dual_arr: _VCSBase | None = None
 
     def __matmul__(self, other: Any) -> Any:
         """``self @ other`` for a dense ``other`` -- see :mod:`vcsc._vcs_matmul`."""

@@ -11,29 +11,24 @@ with ``Delta`` exactly zero off the structural nonzeros, so
 (B.sum(axis=1)) (x) (-c) + B @ Delta``, with only the genuinely ``O(nnz)``
 ``Delta @ B`` / ``B @ Delta`` needing a kernel.
 
-Unlike IVCSC/IVCSR, :class:`~vcsc.VCSCArray`/:class:`~vcsc.VCSRArray` keep
-``indices`` as a plain, already-decoded int array -- there is no byte stream
-to walk, so these kernels are a direct per-nonzero loop (no varint decode,
-no group-aligned chunk bookkeeping). Two shapes of kernel result, exactly as
-in :mod:`vcsc._ivcs_matmul`:
-
-- *major-aligned* (:class:`~vcsc.VCSRArray` for ``self @ B``,
-  :class:`~vcsc.VCSCArray` for ``B @ self``): the major axis is exactly the
-  output's disjoint axis, so parallelizing over major slices
-  (``numba.prange``) is directly safe -- no boundary bookkeeping needed at
-  all, since (unlike a byte stream) each major slice's extent is already
-  known without decoding anything before it.
-- *scatter* (:class:`~vcsc.VCSCArray` for ``self @ B``,
-  :class:`~vcsc.VCSRArray` for ``B @ self``): the major axis a chunk visits
-  is not the output's disjoint axis, so each chunk accumulates into its own
-  private output-shaped buffer, summed across chunks at the end -- the same
-  thread-local-partial-then-reduce idiom used throughout this package. Chunk
-  boundaries are chosen along the major axis to balance *nonzero count* per
-  chunk (:func:`_nnz_balanced_major_chunks`), since major slices can vary
-  widely in size. Peak memory is bounded by the same fixed budget as
-  :mod:`vcsc._ivcs_matmul` (:func:`vcsc._ivcs_matmul._scatter_layout`,
-  reused here), shrinking ``n_chunks`` and/or column-blocking ``B``/``Bl``
-  rather than ever scaling accumulator memory with ``k``/``p``.
+Both ``self @ B`` and ``B @ self`` need a kernel that's *major-aligned*:
+parallelizing safely over the major axis requires the major axis to be
+exactly the output's disjoint axis (:class:`~vcsc.VCSRArray` for
+``self @ B``, :class:`~vcsc.VCSCArray` for ``B @ self`` -- see
+:func:`_vcsr_matmul_delta`/:func:`_vcsc_rmatmul_delta`). The other direction
+on a given array (:class:`~vcsc.VCSCArray` for ``self @ B``,
+:class:`~vcsc.VCSRArray` for ``B @ self``) doesn't have that alignment --
+rather than run a scatter kernel there (thread-local output-shaped
+accumulators, reduced across threads: cache-unfriendly, and memory-hungry
+enough for wide ``B`` to need throttling), :func:`_get_dual` builds and
+caches the *other* VCS format's storage for the same underlying array, once,
+via :meth:`~vcsc._base._VCSBase._transpose_major` -- a single global sort
+(see :func:`vcsc._construct.transpose_major`), not a per-call cost -- and
+every subsequent call in the misaligned direction runs the same
+major-aligned kernel against that cached dual instead. ``row_scale``/
+``gene_scale``/``col_mean`` are per-row/per-column statistics, so they carry
+over unchanged regardless of which physical layout is used to compute
+against.
 """
 
 from __future__ import annotations
@@ -43,27 +38,10 @@ from typing import TYPE_CHECKING, Any
 import numba
 import numpy as np
 
-from vcsc._ivcs_matmul import _scatter_layout
-
 if TYPE_CHECKING:
-    from vcsc._norm_common import NormalizedViewBase
+    from vcsc._vcs_norm import _VCSNormalizedBase
 
 __all__ = ["dense_at_normalized", "normalized_at_dense"]
-
-
-def _nnz_balanced_major_chunks(major_ptr: np.ndarray, value_ptr: np.ndarray, n_chunks: int) -> np.ndarray:
-    """Major-axis boundaries splitting ``[0, n_major]`` into ``n_chunks`` runs of ~equal nnz."""
-    n_major = major_ptr.shape[0] - 1
-    n_chunks = max(1, min(n_chunks, max(n_major, 1)))
-    if n_major == 0 or n_chunks == 1:
-        return np.array([0, n_major], dtype=np.int64)
-    cum = value_ptr[major_ptr]  # cumulative nnz at each major boundary (length n_major + 1)
-    total = cum[-1]
-    if total == 0:
-        return np.array([0, n_major], dtype=np.int64)
-    targets = np.linspace(0, total, n_chunks + 1)[1:-1]
-    bounds = np.searchsorted(cum, targets, side="left").astype(np.int64)
-    return np.concatenate(([0], bounds, [n_major]))
 
 
 # -- major-aligned: VCSR, self @ B (out rows == major slices) ---------------
@@ -122,102 +100,14 @@ def _rmatmul_vcsc(arr, row_scale, gene_scale, B: np.ndarray) -> np.ndarray:
     return out
 
 
-# -- scatter: VCSC, self @ B (out rows == minor axis, not major) ------------
+# -- dual-format cache: gives every call a major-aligned array to run against
 
 
-@numba.njit(cache=True, parallel=True)
-def _vcsc_matmul_delta_scatter(major_ptr, values, value_ptr, indices, row_scale, gene_scale, B, partial, chunk_major):
-    n_chunks = chunk_major.shape[0] - 1
-    k = B.shape[1]
-    for t in numba.prange(n_chunks):  # ty: ignore[not-iterable]
-        j0, j1 = chunk_major[t], chunk_major[t + 1]
-        if j0 == j1:
-            continue
-        out_t = partial[t]
-        for j in range(j0, j1):
-            gs = gene_scale[j]
-            if gs == 0.0:
-                continue
-            for u in range(major_ptr[j], major_ptr[j + 1]):
-                v = values[u]
-                for kk in range(value_ptr[u], value_ptr[u + 1]):
-                    row = indices[kk]
-                    delta = np.log10(1.0 + 1000.0 * (v / row_scale[row] / gs))
-                    for c in range(k):
-                        out_t[row, c] += delta * B[j, c]
-
-
-def _matmul_vcsc(arr, row_scale, gene_scale, B: np.ndarray) -> np.ndarray:
-    n_rows = arr.n_minor
-    k = B.shape[1]
-    n_chunks_ideal = numba.get_num_threads()
-    n_chunks, k_block = _scatter_layout(n_chunks_ideal, n_rows, k)
-    chunk_major = _nnz_balanced_major_chunks(arr.major_ptr, arr.value_ptr, n_chunks)
-    n_chunks = chunk_major.shape[0] - 1
-
-    out = np.empty((n_rows, k), dtype=np.float64)
-    partial = np.zeros((n_chunks, n_rows, k_block), dtype=np.float64)  # freshly zeroed (lazy pages)
-    for i, start in enumerate(range(0, k, k_block)):
-        end = min(k, start + k_block)
-        width = end - start
-        block = partial[:, :, :width]
-        if i > 0:  # reused buffer: previous block's contents need clearing
-            block[:] = 0.0
-        _vcsc_matmul_delta_scatter(
-            arr.major_ptr, arr.values, arr.value_ptr, arr.indices,
-            row_scale, gene_scale, np.ascontiguousarray(B[:, start:end]), block, chunk_major,
-        )
-        out[:, start:end] = block.sum(axis=0)
-    return out
-
-
-# -- scatter: VCSR, B @ self (out cols == minor axis, not major) ------------
-
-
-@numba.njit(cache=True, parallel=True)
-def _vcsr_rmatmul_delta_scatter(major_ptr, values, value_ptr, indices, row_scale, gene_scale, B, partial, chunk_major):
-    n_chunks = chunk_major.shape[0] - 1
-    p = B.shape[0]
-    for t in numba.prange(n_chunks):  # ty: ignore[not-iterable]
-        i0, i1 = chunk_major[t], chunk_major[t + 1]
-        if i0 == i1:
-            continue
-        out_t = partial[t]
-        for i in range(i0, i1):
-            rs = row_scale[i]
-            for u in range(major_ptr[i], major_ptr[i + 1]):
-                v = values[u]
-                for kk in range(value_ptr[u], value_ptr[u + 1]):
-                    col = indices[kk]
-                    gs = gene_scale[col]
-                    if gs > 0.0:
-                        delta = np.log10(1.0 + 1000.0 * (v / rs / gs))
-                        for c in range(p):
-                            out_t[c, col] += delta * B[c, i]
-
-
-def _rmatmul_vcsr(arr, row_scale, gene_scale, B: np.ndarray) -> np.ndarray:
-    n_cols = arr.n_minor
-    p = B.shape[0]
-    n_chunks_ideal = numba.get_num_threads()
-    n_chunks, p_block = _scatter_layout(n_chunks_ideal, n_cols, p)
-    chunk_major = _nnz_balanced_major_chunks(arr.major_ptr, arr.value_ptr, n_chunks)
-    n_chunks = chunk_major.shape[0] - 1
-
-    out = np.empty((p, n_cols), dtype=np.float64)
-    partial = np.zeros((n_chunks, p_block, n_cols), dtype=np.float64)  # freshly zeroed (lazy pages)
-    for i, start in enumerate(range(0, p, p_block)):
-        end = min(p, start + p_block)
-        width = end - start
-        block = partial[:, :width, :]
-        if i > 0:  # reused buffer: previous block's contents need clearing
-            block[:] = 0.0
-        _vcsr_rmatmul_delta_scatter(
-            arr.major_ptr, arr.values, arr.value_ptr, arr.indices,
-            row_scale, gene_scale, np.ascontiguousarray(B[start:end, :]), block, chunk_major,
-        )
-        out[start:end, :] = block.sum(axis=0)
-    return out
+def _get_dual(nview: _VCSNormalizedBase):
+    """The opposite-format raw array for ``nview``'s wrapped array, built once and cached."""
+    if nview._dual_arr is None:
+        nview._dual_arr = nview._arr._transpose_major()
+    return nview._dual_arr
 
 
 # -- public entry points: dense correction + sparse delta -------------------
@@ -233,22 +123,21 @@ def _prep_dense(other: Any, expect_rows: int) -> tuple[np.ndarray, bool]:
     return np.ascontiguousarray(B), squeeze
 
 
-def normalized_at_dense(nview: NormalizedViewBase, other: Any) -> np.ndarray:
+def normalized_at_dense(nview: _VCSNormalizedBase, other: Any) -> np.ndarray:
     """``nview @ other`` -- normalized-view-on-the-left sparse-dense product."""
     arr = nview._arr
     n_cols = arr.shape[1]
     B, squeeze = _prep_dense(other, n_cols)
 
-    if arr._format == "csr":
-        out = _matmul_vcsr(arr, nview.row_scale, nview.gene_scale, B)
-    else:
-        out = _matmul_vcsc(arr, nview.row_scale, nview.gene_scale, B)
+    # self @ B is major-aligned for VCSR; VCSC needs its VCSR dual.
+    src = arr if arr._format == "csr" else _get_dual(nview)
+    out = _matmul_vcsr(src, nview.row_scale, nview.gene_scale, B)
     baseline = (-nview.col_mean) @ B  # (k,): every row's implicit-zero contribution
     out += baseline[None, :]
     return out[:, 0] if squeeze else out
 
 
-def dense_at_normalized(nview: NormalizedViewBase, other: Any) -> np.ndarray:
+def dense_at_normalized(nview: _VCSNormalizedBase, other: Any) -> np.ndarray:
     """``other @ nview`` -- normalized-view-on-the-right dense-sparse product."""
     arr = nview._arr
     n_rows = arr.shape[0]
@@ -259,10 +148,9 @@ def dense_at_normalized(nview: NormalizedViewBase, other: Any) -> np.ndarray:
         raise ValueError(f"shape mismatch: expected last dimension {n_rows}, got {B2.shape}")
     B2 = np.ascontiguousarray(B2)
 
-    if arr._format == "csr":
-        out = _rmatmul_vcsr(arr, nview.row_scale, nview.gene_scale, B2)
-    else:
-        out = _rmatmul_vcsc(arr, nview.row_scale, nview.gene_scale, B2)
+    # B @ self is major-aligned for VCSC; VCSR needs its VCSC dual.
+    src = arr if arr._format == "csc" else _get_dual(nview)
+    out = _rmatmul_vcsc(src, nview.row_scale, nview.gene_scale, B2)
     baseline = B2.sum(axis=1)[:, None] * (-nview.col_mean)[None, :]  # (m, n_cols)
     out += baseline
     return out[0, :] if squeeze else out

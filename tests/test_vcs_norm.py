@@ -174,21 +174,33 @@ def test_all_zero_matrix_does_not_crash(vcls):
     np.testing.assert_allclose(nv.toarray(), np.zeros((5, 4)))
 
 
-def test_scatter_matmul_under_tiny_memory_budget_matches_reference(dense, vcls, monkeypatch):
-    """Force n_chunks-shrink + k/p-blocking (see vcsc._ivcs_matmul._scatter_layout)."""
+def test_dual_array_is_built_lazily_and_cached(dense, vcls):
+    """The opposite-format dual is only built on the first misaligned-direction matmul, then reused."""
     if dense.sum() == 0:
         pytest.skip("all-zero matrix: median row total is 0")
-    import vcsc._ivcs_matmul as ivcs_matmul
-
-    monkeypatch.setattr(ivcs_matmul._scatter_layout, "__defaults__", (64,))
-
     v = vcls.from_scipy(_scipy_for(vcls, dense))
     nv = v.normalized()
-    ref = _reference(dense)
+    assert nv._dual_arr is None  # not built at construction
 
-    rng = np.random.default_rng(11)
+    rng = np.random.default_rng(12)
     B = rng.normal(size=(dense.shape[1], 3))
-    np.testing.assert_allclose(nv @ B, ref @ B, atol=1e-7)
-
     Bl = rng.normal(size=(3, dense.shape[0]))
-    np.testing.assert_allclose(Bl @ nv, Bl @ ref, atol=1e-7)
+    nv @ B  # major-aligned for VCSR self@B; builds the dual for VCSC self@B
+    Bl @ nv  # major-aligned for VCSC B@self; builds the dual for VCSR B@self
+
+    dual_after_matmul = nv._dual_arr
+    assert dual_after_matmul is not None
+    assert dual_after_matmul._format != v._format
+
+    nv @ B
+    Bl @ nv
+    # same object reused, not rebuilt, across repeated calls
+    assert nv._dual_arr is dual_after_matmul
+
+
+def test_transpose_major_roundtrip(dense, vcls):
+    v = vcls.from_scipy(_scipy_for(vcls, dense))
+    dual = v._transpose_major()
+    assert dual.shape == v.shape
+    assert dual._format != v._format
+    np.testing.assert_allclose(dual.toarray(), dense)
