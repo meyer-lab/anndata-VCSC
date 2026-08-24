@@ -229,6 +229,7 @@ def test_getitem_boolean_mask(base_adata, dense):
     obs_mask = np.zeros(dense.shape[0], dtype=bool)
     obs_mask[::2] = True
     sub = va[obs_mask, :]
+    assert isinstance(sub.X, VCSCArray)
     np.testing.assert_allclose(sub.X.toarray(), dense[obs_mask])
 
 
@@ -246,5 +247,6 @@ def test_getitem_single_int_row(base_adata, dense):
     va = VCSCAnnData.from_anndata(base_adata, include_raw=False)
     sub = va[0, :]
     assert sub.shape == (1, dense.shape[1])
+    assert isinstance(sub.X, VCSCArray)
     np.testing.assert_allclose(sub.X.toarray(), dense[0:1])
 
