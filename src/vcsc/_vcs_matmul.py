@@ -73,31 +73,45 @@ def _matmul_vcsr(arr, row_scale, gene_scale, B: np.ndarray) -> np.ndarray:
 
 
 # -- major-aligned: VCSC, B @ self (out cols == major slices) ---------------
+#
+# ``B`` arrives as (p, n_rows) and the natural output is (p, n_cols) -- but
+# with ``out``/``B`` in that shape, the innermost loop over ``c`` (0..p) hits
+# out[c, j] and B[c, row], both strided by the *other* array's full width
+# (n_cols/n_rows elements between consecutive c), not the unit stride a
+# C-contiguous inner loop needs. Every one of the up to nnz*p inner-loop
+# steps is a separate cache line, so this is a per-nonzero cost, not a
+# one-off. Transposing both to (n_rows, p)/(n_cols, p) first makes the
+# inner loop over ``c`` walk one contiguous row of each -- the transposes
+# themselves are O(p * (n_rows + n_cols)), negligible next to the O(nnz * p)
+# kernel they speed up.
 
 
 @numba.njit(cache=True, parallel=True)
-def _vcsc_rmatmul_delta(major_ptr, values, value_ptr, indices, row_scale, gene_scale, B, out):
+def _vcsc_rmatmul_delta(major_ptr, values, value_ptr, indices, row_scale, gene_scale, Bt, out_t):
     n_major = major_ptr.shape[0] - 1
-    p = B.shape[0]
+    p = Bt.shape[1]
     for j in numba.prange(n_major):  # ty: ignore[not-iterable]
         gs = gene_scale[j]
         if gs == 0.0:
             continue
+        acc = out_t[j]
         for u in range(major_ptr[j], major_ptr[j + 1]):
             v = values[u]
             for kk in range(value_ptr[u], value_ptr[u + 1]):
                 row = indices[kk]
                 delta = np.log10(1.0 + 1000.0 * (v / row_scale[row] / gs))
+                brow = Bt[row]
                 for c in range(p):
-                    out[c, j] += delta * B[c, row]
+                    acc[c] += delta * brow[c]
 
 
 def _rmatmul_vcsc(arr, row_scale, gene_scale, B: np.ndarray) -> np.ndarray:
     n_cols = arr.n_major
     p = B.shape[0]
-    out = np.zeros((p, n_cols), dtype=np.float64)
-    _vcsc_rmatmul_delta(arr.major_ptr, arr.values, arr.value_ptr, arr.indices, row_scale, gene_scale, B, out)
-    return out
+    Bt = np.ascontiguousarray(B.T)  # (n_rows, p)
+    out_t = np.zeros((n_cols, p), dtype=np.float64)
+    _vcsc_rmatmul_delta(arr.major_ptr, arr.values, arr.value_ptr, arr.indices, row_scale, gene_scale, Bt, out_t)
+    return np.ascontiguousarray(out_t.T)
 
 
 # -- dual-format cache: gives every call a major-aligned array to run against
