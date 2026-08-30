@@ -19,8 +19,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 import anndata as ad
+import h5py
 import numpy as np
-from anndata.compat import H5Group, ZarrGroup
+import zarr
 
 from vcsc import _ivcsc
 from vcsc._base import VCSCArray, VCSRArray, _VCSBase
@@ -28,8 +29,6 @@ from vcsc._base import VCSCArray, VCSRArray, _VCSBase
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    import h5py
-    import zarr
     from anndata._io.specs.registry import Reader, Writer
 
     GroupStorageType = h5py.Group | zarr.Group
@@ -124,7 +123,7 @@ def _make_read_ivcs(cls: type[_VCSBase]):
 def _register() -> None:
     from anndata._io.specs.registry import _REGISTRY, IOSpec
 
-    for store_type in (H5Group, ZarrGroup):
+    for store_type in (h5py.Group, zarr.Group):
         for cls, spec_name in ((VCSCArray, "vcsc"), (VCSRArray, "vcsr")):
             spec = IOSpec(spec_name, _SPEC_VERSION)
             if not _REGISTRY.has_write(store_type, cls, frozenset()):
