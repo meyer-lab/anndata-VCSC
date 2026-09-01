@@ -71,6 +71,129 @@ def test_no_filtering_keeps_everything(tmp_path, rng):
     assert result.n_vars == dense.shape[1]
 
 
+def test_obs_filter_matches_subset_reference(tmp_path):
+    import pandas as pd
+
+    dense = np.array(
+        [
+            [10, 0, 2],
+            [0, 100, 0],
+            [10, 0, 2],
+            [0, 100, 0],
+            [10, 0, 2],
+            [0, 100, 0],
+        ],
+        dtype=np.float64,
+    )
+    obs = pd.DataFrame(
+        {"condition": ["control", "treated"] * 3},
+        index=[f"cell_{i}" for i in range(dense.shape[0])],
+    )
+    adata = ad.AnnData(X=sp.csr_array(dense), obs=obs)
+    path = tmp_path / "obs_filter.ivcsr.h5ad"
+    VCSCAnnData.from_anndata(adata, format="csr").write_h5ad(path, format="ivcsc")
+
+    obs_mask = np.asarray(obs["condition"] == "control")
+    result = load_and_normalize(
+        path,
+        min_cell_counts=-1.0,
+        gene_threshold=1.0,
+        obs_filter=lambda obs: obs["condition"] == "control",
+    )
+    ref_X, _, ref_genes = _reference_prepare(dense[obs_mask], -1.0, 1.0)
+
+    assert list(result.obs_names) == ["cell_0", "cell_2", "cell_4"]
+    assert list(result.var_names) == [str(i) for i in ref_genes]
+    assert isinstance(result.X, sp.csr_array)
+    np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
+
+
+def test_obs_filter_applied_before_cell_filtering_and_slices_metadata(tmp_path, rng):
+    import pandas as pd
+
+    n_cells, n_genes = 12, 6
+    dense = rng.integers(0, 8, size=(n_cells, n_genes)).astype(np.float64)
+    dense[rng.random(dense.shape) < 0.4] = 0.0
+    dense[3] = 0.0
+
+    obs = pd.DataFrame(
+        {
+            "condition": ["control", "treated", "control"] * 4,
+            "batch": np.arange(n_cells),
+        },
+        index=[f"cell_{i}" for i in range(n_cells)],
+    )
+    var = pd.DataFrame(index=[f"gene_{j}" for j in range(n_genes)])
+    obsm = {"embedding": rng.random((n_cells, 2))}
+    obsp = {"distances": rng.random((n_cells, n_cells))}
+    adata = ad.AnnData(X=sp.csr_array(dense), obs=obs, var=var, obsm=obsm, obsp=obsp)
+    path = tmp_path / "obs_filter_metadata.ivcsr.h5ad"
+    VCSCAnnData.from_anndata(adata, format="csr").write_h5ad(path, format="ivcsc")
+
+    obs_mask = np.asarray(obs["condition"] == "control")
+    selected_rows = np.nonzero(obs_mask)[0]
+    ref_X, ref_cells, ref_genes = _reference_prepare(dense[obs_mask], 5.0, 0.2)
+    retained_rows = selected_rows[ref_cells]
+
+    result = load_and_normalize(
+        path,
+        min_cell_counts=5.0,
+        gene_threshold=0.2,
+        obs_filter=lambda obs: obs["condition"] == "control",
+    )
+
+    assert list(result.obs_names) == [f"cell_{i}" for i in retained_rows]
+    assert list(result.var_names) == [f"gene_{j}" for j in ref_genes]
+    assert list(result.obs["batch"]) == list(retained_rows)
+    np.testing.assert_allclose(
+        np.asarray(result.obsm["embedding"]), np.asarray(obsm["embedding"])[retained_rows]
+    )
+    np.testing.assert_allclose(
+        np.asarray(result.obsp["distances"]),
+        np.asarray(obsp["distances"])[retained_rows][:, retained_rows],
+    )
+    assert isinstance(result.X, sp.csr_array)
+    np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("obs_filter", "match"),
+    [
+        (lambda obs: np.ones(len(obs) - 1, dtype=bool), "mask of length"),
+        (lambda obs: np.ones(len(obs), dtype=np.int8), "boolean mask"),
+        (lambda obs: np.zeros(len(obs), dtype=bool), "selected no cells"),
+    ],
+)
+def test_obs_filter_validation(tmp_path, rng, obs_filter, match):
+    dense = rng.integers(0, 5, size=(10, 4)).astype(np.float64)
+    path = _write_ivcsr(tmp_path, dense)
+
+    with pytest.raises(ValueError, match=match):
+        load_and_normalize(path, obs_filter=obs_filter)
+
+
+def test_obs_filter_must_be_callable(tmp_path, rng):
+    dense = rng.integers(0, 5, size=(10, 4)).astype(np.float64)
+    path = _write_ivcsr(tmp_path, dense)
+
+    with pytest.raises(TypeError, match="must be callable"):
+        load_and_normalize(path, obs_filter=True)  # ty: ignore[invalid-argument-type]
+
+
+def test_obs_filter_requires_obs(tmp_path):
+    import h5py
+
+    from vcsc import _io
+
+    dense = np.array([[1.0, 0.0], [0.0, 1.0]])
+    path = tmp_path / "no_obs.ivcsr.h5ad"
+    with h5py.File(path, "w") as f:
+        _io.write_ivcs_elem(f, "X", VCSRArray.from_scipy(sp.csr_array(dense)))
+
+    with pytest.raises(ValueError, match="requires an obs table"):
+        load_and_normalize(path, obs_filter=lambda obs: np.ones(len(obs), dtype=bool))
+
+
 def test_metadata_sliced_correctly(tmp_path, rng):
     import pandas as pd
 
