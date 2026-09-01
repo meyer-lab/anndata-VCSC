@@ -20,19 +20,20 @@ the design here:
   dataset) that touches only ``major_ptr``/``values``/``value_ptr``. It needs
   none of the (compressed, delta+varint-packed) ``indices`` array, so the
   cell mask can be computed without ever decoding it.
-- **Gene filtering and normalization cannot avoid touching every nonzero.**
-  A gene's total count is a scatter-add keyed by minor-axis index, which
-  means visiting every nonzero -- there's no shortcut analogous to the cell
-  case. So ``indices`` must be decoded (using the parallel decoder in
-  :mod:`vcsc._ivcsc`) before gene filtering can happen, and once decoded the
-  per-cell scale factor differs per row while the per-gene scale factor
-  differs per column, so after both are applied a row's values are no longer
-  mostly-repeated -- the whole point of VCSC/VCSR's deduplication is gone.
-  Normalization is therefore done on a plain CSR array, built once, right
-  after the two masks are known -- via a fused numba pass rather than
-  scipy's generic per-step (row sum, row scale, column sum, column scale,
-  multiply, add, log10) elementwise pipeline, each step of which is another
-  single-threaded full-``nnz`` pass with its own temporary.
+- **Gene filtering and normalization must touch every retained nonzero.** A
+  gene's total count is a scatter-add keyed by minor-axis index, so there is
+  no shortcut analogous to the cell case. Without an ``obs_filter``, every
+  index is decoded. With an ``obs_filter``, the packed stream must still be
+  scanned because row byte offsets are not stored, but indices and values
+  are materialized only for selected rows. Once decoded, the per-cell scale
+  factor differs per row while the per-gene scale factor differs per column,
+  so after both are applied a row's values are no longer mostly-repeated --
+  the whole point of VCSC/VCSR's deduplication is gone. Normalization is
+  therefore done on a plain CSR array, built once, right after the two masks
+  are known -- via a fused numba pass rather than scipy's generic per-step
+  (row sum, row scale, column sum, column scale, multiply, add, log10)
+  elementwise pipeline, each step of which is another single-threaded
+  full-``nnz`` pass with its own temporary.
 
 The one thing this implementation does *not* do is what
 :func:`parafac2.normalize.prepare_dataset` calls "indexing for subsetting the
@@ -48,12 +49,14 @@ them, and computing them is a simple ``X.mean(axis=0)`` for callers that do.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anndata as ad
 import numba
 import numpy as np
+import pandas as pd
 from scipy.sparse import csr_array
 
 from vcsc import _ivcsc
@@ -98,6 +101,72 @@ def _build_data(values: np.ndarray, value_ptr: np.ndarray, nnz: int) -> np.ndarr
     out = np.empty(nnz, dtype=values.dtype)
     _expand_values(values, value_ptr, out)
     return out
+
+
+# -- selective packed decode (obs-filtered IVCSR rows only) -----------------
+
+
+@numba.njit(cache=True)
+def _decode_selected_rows(
+    major_ptr: np.ndarray,
+    values: np.ndarray,
+    value_ptr: np.ndarray,
+    packed: np.ndarray,
+    row_mask: np.ndarray,
+    out_indices: np.ndarray,
+    out_data: np.ndarray,
+) -> None:
+    """Decode only selected IVCSR rows while scanning past excluded rows."""
+    pos = 0
+    out_pos = 0
+    n_rows = major_ptr.shape[0] - 1
+
+    for r in range(n_rows):
+        keep = row_mask[r]
+        for g in range(major_ptr[r], major_ptr[r + 1]):
+            if keep:
+                prev = np.int64(-1)
+                value = values[g]
+                for _ in range(value_ptr[g], value_ptr[g + 1]):
+                    shift = np.uint64(0)
+                    result = np.uint64(0)
+                    while True:
+                        b = packed[pos]
+                        pos += 1
+                        result |= np.uint64(b & 0x7F) << shift
+                        if b & 0x80 == 0:
+                            break
+                        shift += np.uint64(7)
+                    prev = prev + 1 + np.int64(result)
+                    out_indices[out_pos] = prev
+                    out_data[out_pos] = value
+                    out_pos += 1
+            else:
+                for _ in range(value_ptr[g], value_ptr[g + 1]):
+                    while packed[pos] & 0x80:
+                        pos += 1
+                    pos += 1
+
+
+def _build_selected_rows(
+    major_ptr: np.ndarray,
+    values: np.ndarray,
+    value_ptr: np.ndarray,
+    packed: np.ndarray,
+    indices_dtype: np.dtype,
+    row_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    full_indptr = value_ptr[major_ptr]
+    row_nnz = np.diff(full_indptr)[row_mask]
+    nnz = int(row_nnz.sum())
+    ptr_dtype = np.int64 if nnz > np.iinfo(np.int32).max else np.int32
+
+    indptr = np.zeros(row_nnz.shape[0] + 1, dtype=ptr_dtype)
+    np.cumsum(row_nnz, out=indptr[1:])
+    indices = np.empty(nnz, dtype=indices_dtype)
+    data = np.empty(nnz, dtype=values.dtype)
+    _decode_selected_rows(major_ptr, values, value_ptr, packed, row_mask, indices, data)
+    return indptr, indices, data
 
 
 # -- parallel weighted bincount (raw per-gene totals, for gene_mask) --------
@@ -279,6 +348,7 @@ def load_and_normalize(
     *,
     min_cell_counts: float = 10.0,
     gene_threshold: float = 0.0,
+    obs_filter: Callable[[pd.DataFrame], object] | None = None,
     x_key: str = "X",
 ) -> ad.AnnData:
     """Load, filter, and depth-normalize a VCSR/IVCSR-backed ``.h5ad`` file.
@@ -286,8 +356,8 @@ def load_and_normalize(
     Reproduces ``parafac2.normalize.prepare_dataset``: cells with total
     counts <= ``min_cell_counts`` and genes with total counts <=
     ``gene_threshold * n_cells`` (both measured on the raw, unfiltered
-    counts, matching the reference implementation) are dropped; the
-    remaining matrix is row-normalized to the median per-cell depth, then
+    counts after any ``obs_filter``, matching the reference implementation)
+    are dropped; the remaining matrix is row-normalized to the median per-cell depth, then
     column-normalized by gene sum, then transformed as ``log10(1000x + 1)``.
     Surrounding metadata (``obs``, ``var``, ``obsm``, etc.) is sliced to
     match the retained cells and genes.
@@ -304,6 +374,13 @@ def load_and_normalize(
         Minimum threshold fraction for gene inclusion, as in
         ``parafac2.normalize.prepare_dataset``: genes with total raw counts
         <= ``gene_threshold * n_cells`` are dropped.
+    obs_filter
+        Optional callable receiving ``obs`` and returning a one-dimensional
+        boolean mask. When provided, rows are subset before cell filtering,
+        gene filtering, and normalization, so gene totals and
+        ``gene_threshold`` are computed using only the selected cells. The
+        packed IVCSR stream is still read in full, but indices and values are
+        materialized only for selected rows.
     x_key
         Top-level h5ad group holding the IVCSR array (``"X"`` by default).
 
@@ -312,6 +389,18 @@ def load_and_normalize(
     ad.AnnData
         Filtered, depth-normalized AnnData object with ``X`` as a CSR array
         and sliced metadata.
+
+    Examples
+    --------
+    Select cells using multiple ``obs`` columns and multiple accepted values::
+
+        load_and_normalize(
+            path,
+            obs_filter=lambda obs: (
+                obs["condition"].isin(["control", "vehicle"])
+                & (obs["timepoint"] == "T3")
+            ),
+        )
     """
     import h5py
     import hdf5plugin  # noqa: F401  -- registers the Blosc2 HDF5 filter
@@ -333,19 +422,50 @@ def load_and_normalize(
 
     # Cell mask: no decode needed.
     cell_totals = _cell_totals(major_ptr, values, value_ptr)
-    cell_mask = cell_totals > min_cell_counts
 
-    # Everything past this point needs every nonzero visited at least once.
-    # Each array below is only kept alive as long as something still needs
-    # it -- at nnz-billions scale, an un-`del`ed stale reference is a real
-    # multi-GB cost, not housekeeping.
-    indices = _ivcsc.unpack_indices(value_ptr, packed, indices_dtype)
-    del packed
-    data = _build_data(values, value_ptr, indices.shape[0])
-    row_indptr = value_ptr[major_ptr]
+    if obs_filter is None:
+        cell_mask = cell_totals > min_cell_counts
 
-    gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
-    gene_mask = gene_totals_raw > (gene_threshold * n_cells)
+        # Everything past this point needs every nonzero visited at least once.
+        # Each array below is only kept alive as long as something still needs
+        # it -- at nnz-billions scale, an un-`del`ed stale reference is a real
+        # multi-GB cost, not housekeeping.
+        indices = _ivcsc.unpack_indices(value_ptr, packed, indices_dtype)
+        del packed
+        data = _build_data(values, value_ptr, indices.shape[0])
+        row_indptr = value_ptr[major_ptr]
+
+        gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
+        gene_mask = gene_totals_raw > (gene_threshold * n_cells)
+        metadata_cell_mask = cell_mask
+    else:
+        obs = kwargs.get("obs")
+        if not isinstance(obs, pd.DataFrame):
+            raise ValueError("obs_filter requires an obs table in the h5ad file")
+        if not callable(obs_filter):
+            raise TypeError("obs_filter must be callable or None")
+
+        obs_mask = np.asarray(obs_filter(obs))
+        if obs_mask.ndim != 1 or obs_mask.shape[0] != n_cells:
+            raise ValueError(f"obs_filter must return a one-dimensional mask of length {n_cells}")
+        if obs_mask.dtype != np.bool_:
+            raise ValueError("obs_filter must return a boolean mask")
+        if not np.any(obs_mask):
+            raise ValueError("obs_filter selected no cells")
+        obs_mask = np.ascontiguousarray(obs_mask)
+
+        selected_rows = np.nonzero(obs_mask)[0]
+        cell_mask = cell_totals[obs_mask] > min_cell_counts
+        row_indptr, indices, data = _build_selected_rows(
+            major_ptr, values, value_ptr, packed, indices_dtype, obs_mask
+        )
+        del packed
+
+        gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
+        gene_mask = gene_totals_raw > (gene_threshold * selected_rows.shape[0])
+
+        metadata_cell_mask = np.zeros(n_cells, dtype=np.bool_)
+        metadata_cell_mask[selected_rows[cell_mask]] = True
 
     new_indptr, out_indices, out_data, kept_rows, n_kept_genes = _filter_and_compact(
         row_indptr, indices, data, cell_mask, gene_mask
@@ -361,7 +481,7 @@ def load_and_normalize(
         adata = ad.AnnData(**kwargs)  # ty: ignore[invalid-argument-type]
     else:
         adata = ad.AnnData(shape=shape, **kwargs)  # ty: ignore[invalid-argument-type]
-    adata = adata[cell_mask, gene_mask].copy()
+    adata = adata[metadata_cell_mask, gene_mask].copy()
     adata.X = X
 
     return adata
