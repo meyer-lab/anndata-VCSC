@@ -6,7 +6,22 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["is_full_slice", "normalize_major_idx"]
+__all__ = ["is_full_slice", "normalize_major_idx", "smallest_index_dtype"]
+
+_INT32_MAX = np.iinfo(np.int32).max
+
+
+def smallest_index_dtype(n: int) -> np.dtype:
+    """Narrowest signed integer dtype that can address an axis of length ``n``.
+
+    Index arrays are sized by the axis they point *into*, not by the array
+    they live next to: minor-axis ``indices`` are bounded by ``n_minor``
+    (typically a gene count, comfortably int32) even when the array holds
+    more than ``INT32_MAX`` nonzeros. Keying each index array off its own
+    bound is what keeps a large-nnz array from paying int64 for indices that
+    never need it.
+    """
+    return np.dtype(np.int32) if n <= _INT32_MAX else np.dtype(np.int64)
 
 
 def is_full_slice(key: Any) -> bool:

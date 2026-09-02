@@ -20,6 +20,7 @@ import scipy.sparse as sp
 from vsparse import _construct, _ops
 from vsparse._indexutils import is_full_slice as _is_full_slice
 from vsparse._indexutils import normalize_major_idx as _normalize_major_idx
+from vsparse._indexutils import smallest_index_dtype as _smallest_index_dtype
 
 __all__ = ["VCSCArray", "VCSRArray"]
 
@@ -66,6 +67,17 @@ class _VCSBase:
             raise ValueError("value_ptr[-1] must equal len(indices)")
         if indices.shape[0] and (indices.min() < 0 or indices.max() >= n_minor):
             raise ValueError("indices out of bounds for the given shape")
+
+        # Narrow *after* the bounds check above, so an out-of-range index is
+        # rejected rather than silently truncated by the cast. ``indices`` is
+        # the only nnz-sized array in the layout, so storing it wider than
+        # ``n_minor`` requires is the largest avoidable cost here; this is a
+        # no-op (no copy) whenever it already has the right dtype, which is
+        # the normal case now that :func:`vsparse._construct.compress` picks
+        # the dtype up front.
+        idx_dtype = _smallest_index_dtype(n_minor)
+        if idx_dtype.itemsize < indices.dtype.itemsize:
+            indices = indices.astype(idx_dtype, copy=False)
 
         self.shape = (int(shape[0]), int(shape[1]))
         self.major_ptr = major_ptr
@@ -124,9 +136,9 @@ class _VCSBase:
     def from_scipy(cls, mat) -> _VCSBase:
         """Build from any scipy sparse array/matrix (converted internally)."""
         mat = mat.tocsc() if cls._format == "csc" else mat.tocsr()
-        n_major, _n_minor = cls._swap(mat.shape)
+        n_major, n_minor = cls._swap(mat.shape)
         major_ptr, values, value_ptr, indices = _construct.compress(
-            mat.indptr, mat.indices, mat.data, n_major
+            mat.indptr, mat.indices, mat.data, n_major, n_minor
         )
         return cls(mat.shape, major_ptr, values, value_ptr, indices)
 
