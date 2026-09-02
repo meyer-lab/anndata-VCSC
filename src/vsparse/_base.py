@@ -225,6 +225,121 @@ class _VCSBase:
         major_axis = 0 if self._format == "csc" else 1
         return self._major_sums() if axis == major_axis else self._minor_sums()
 
+    def mean(self, axis: int | None = None) -> np.ndarray | float:
+        """Mean of (structural + implicit-zero) values along ``axis``, or overall if ``None``."""
+        if axis is None:
+            total = self.shape[0] * self.shape[1]
+            return self.sum() / total if total else float("nan")
+        if axis not in (0, 1):
+            raise ValueError(f"axis must be None, 0, or 1, got {axis!r}")
+        denom = self.shape[0] if axis == 0 else self.shape[1]
+        return self.sum(axis=axis) / denom if denom else np.full(0, float("nan"))
+
+    def _reduce_initial(self, kind: str) -> Any:
+        """Identity element for a max/min reduction over ``self.values.dtype``."""
+        dt = self.values.dtype
+        if np.issubdtype(dt, np.integer):
+            return np.iinfo(dt).min if kind == "max" else np.iinfo(dt).max
+        return -np.inf if kind == "max" else np.inf
+
+    def _major_reduce(self, ufunc: np.ufunc, initial: Any) -> np.ndarray:
+        """Per-major-slice max/min, accounting for implicit zeros in sparse slices."""
+        out = np.full(self.n_major, initial, dtype=self.values.dtype)
+        group_of_major = np.repeat(np.arange(self.n_major, dtype=np.int64), np.diff(self.major_ptr))
+        ufunc.at(out, group_of_major, self.values)
+        nnz_per_major = self.value_ptr[self.major_ptr[1:]] - self.value_ptr[self.major_ptr[:-1]]
+        not_dense = nnz_per_major < self.n_minor
+        out[not_dense] = ufunc(out[not_dense], 0)
+        return out
+
+    def _minor_reduce(self, ufunc: np.ufunc, initial: Any) -> np.ndarray:
+        """Per-minor-index max/min, accounting for implicit zeros in sparse slices."""
+        group_sizes = np.diff(self.value_ptr)
+        expanded = np.repeat(self.values, group_sizes)
+        out = np.full(self.n_minor, initial, dtype=self.values.dtype)
+        ufunc.at(out, self.indices, expanded)
+        counts = np.bincount(self.indices, minlength=self.n_minor)
+        not_dense = counts < self.n_major
+        out[not_dense] = ufunc(out[not_dense], 0)
+        return out
+
+    def _reduce(self, ufunc: np.ufunc, kind: str, axis: int | None) -> np.ndarray | Any:
+        initial = self._reduce_initial(kind)
+        if axis is None:
+            m = ufunc.reduce(self.values, initial=initial) if self.values.size else initial
+            if self.nnz < self.shape[0] * self.shape[1]:
+                m = ufunc(m, 0)
+            return m.item() if hasattr(m, "item") else m
+        if axis not in (0, 1):
+            raise ValueError(f"axis must be None, 0, or 1, got {axis!r}")
+        major_axis = 0 if self._format == "csc" else 1
+        return (
+            self._major_reduce(ufunc, initial)
+            if axis == major_axis
+            else self._minor_reduce(ufunc, initial)
+        )
+
+    def max(self, axis: int | None = None) -> np.ndarray | Any:
+        """Maximum value (including implicit zeros) along ``axis``, or overall if ``None``."""
+        return self._reduce(np.maximum, "max", axis)
+
+    def min(self, axis: int | None = None) -> np.ndarray | Any:
+        """Minimum value (including implicit zeros) along ``axis``, or overall if ``None``."""
+        return self._reduce(np.minimum, "min", axis)
+
+    # -- elementwise arithmetic ----------------------------------------------
+
+    def _elementwise(self, other: Any, op_name: str) -> _VCSBase | np.ndarray:
+        """Fall back to scipy to compute an elementwise binary op, re-wrapping a sparse result."""
+        other_arg = other.to_scipy() if isinstance(other, _VCSBase) else other
+        self_scipy = self.to_scipy()
+        if op_name == "multiply":
+            result = self_scipy.multiply(other_arg)
+        else:
+            result = getattr(self_scipy, op_name)(other_arg)
+        if result is NotImplemented:
+            return NotImplemented
+        if sp.issparse(result):
+            return type(self).from_scipy(result)
+        return np.asarray(result)
+
+    def __add__(self, other):
+        if np.isscalar(other):
+            if other == 0:
+                return self.copy()
+            raise NotImplementedError(
+                "adding a nonzero scalar to a sparse array is not supported"
+            )
+        return self._elementwise(other, "__add__")
+
+    __radd__ = __add__
+
+    def __sub__(self, other):
+        if np.isscalar(other):
+            if other == 0:
+                return self.copy()
+            raise NotImplementedError(
+                "subtracting a nonzero scalar from a sparse array is not supported"
+            )
+        return self._elementwise(other, "__sub__")
+
+    def __rsub__(self, other):
+        if np.isscalar(other):
+            if other == 0:
+                return -self
+            raise NotImplementedError(
+                "subtracting a sparse array from a nonzero scalar is not supported"
+            )
+        other_arg = other.to_scipy() if isinstance(other, _VCSBase) else other
+        result = other_arg - self.to_scipy()
+        if sp.issparse(result):
+            return type(self).from_scipy(result)
+        return np.asarray(result)
+
+    def multiply(self, other) -> _VCSBase | np.ndarray:
+        """Elementwise multiplication (matches scipy's sparse-array ``.multiply``)."""
+        return self * other
+
     # -- scalar arithmetic --------------------------------------------------
 
     def _empty_like(self) -> _VCSBase:
@@ -238,30 +353,30 @@ class _VCSBase:
         )
 
     def __mul__(self, other):
-        if not np.isscalar(other):
-            return NotImplemented
-        if other == 0:
-            return self._empty_like()
-        return type(self)(
-            self.shape,
-            self.major_ptr.copy(),
-            self.values * other,
-            self.value_ptr.copy(),
-            self.indices.copy(),
-        )
+        if np.isscalar(other):
+            if other == 0:
+                return self._empty_like()
+            return type(self)(
+                self.shape,
+                self.major_ptr.copy(),
+                self.values * other,
+                self.value_ptr.copy(),
+                self.indices.copy(),
+            )
+        return self._elementwise(other, "multiply")
 
     __rmul__ = __mul__
 
     def __truediv__(self, other):
-        if not np.isscalar(other):
-            return NotImplemented
-        return type(self)(
-            self.shape,
-            self.major_ptr.copy(),
-            self.values / other,
-            self.value_ptr.copy(),
-            self.indices.copy(),
-        )
+        if np.isscalar(other):
+            return type(self)(
+                self.shape,
+                self.major_ptr.copy(),
+                self.values / other,
+                self.value_ptr.copy(),
+                self.indices.copy(),
+            )
+        return self._elementwise(other, "__truediv__")
 
     def __neg__(self):
         return self * -1
