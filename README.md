@@ -20,16 +20,16 @@ matrices, e.g. single-cell RNA-seq counts.
 Install from source or via package manager:
 
 ```sh
-pip install git+https://github.com/meyer-lab/anndata-VCSC.git
+pip install git+https://github.com/meyer-lab/vsparse.git
 # or with uv
-uv add git+https://github.com/meyer-lab/anndata-VCSC.git
+uv add git+https://github.com/meyer-lab/vsparse.git
 ```
 
 For local development:
 
 ```sh
-git clone https://github.com/meyer-lab/anndata-VCSC.git
-cd anndata-VCSC
+git clone https://github.com/meyer-lab/vsparse.git
+cd vsparse
 uv sync --all-extras --dev
 ```
 
