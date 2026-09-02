@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vcsc import VCSCAnnData, VCSRArray
-from vcsc._rapid_load import load_and_normalize, load_packed
+from vsparse import VCSCAnnData, VCSRArray
+from vsparse._rapid_load import load_and_normalize, load_packed
 
 
 def _reference_prepare(dense: np.ndarray, min_cell_counts: float, gene_threshold: float):
@@ -183,7 +183,7 @@ def test_obs_filter_must_be_callable(tmp_path, rng):
 def test_obs_filter_requires_obs(tmp_path):
     import h5py
 
-    from vcsc import _io
+    from vsparse import _io
 
     dense = np.array([[1.0, 0.0], [0.0, 1.0]])
     path = tmp_path / "no_obs.ivcsr.h5ad"
@@ -267,7 +267,7 @@ def test_rapid_load_preserves_raw(tmp_path, rng):
     """Verify that load_and_normalize restores adata.raw when present in the h5ad file."""
     import h5py
 
-    from vcsc import VCSRArray, _io
+    from vsparse import VCSRArray, _io
 
     dense = rng.integers(0, 8, size=(40, 20)).astype(np.float64)
     adata = ad.AnnData(X=sp.csr_array(dense))
@@ -288,7 +288,7 @@ def test_rapid_load_custom_x_key(tmp_path, rng):
     """Verify load_and_normalize reads from a custom top-level group key."""
     import h5py
 
-    from vcsc import VCSRArray, _io
+    from vsparse import VCSRArray, _io
 
     dense = rng.integers(0, 8, size=(30, 15)).astype(np.float64)
     vcsr = VCSRArray.from_scipy(sp.csr_array(dense))

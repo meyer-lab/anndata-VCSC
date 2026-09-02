@@ -11,17 +11,17 @@ with ``Delta`` exactly zero off the structural nonzeros, so
 
 Both ``self @ B`` and ``B @ self`` need a kernel that's *major-aligned*:
 parallelizing safely over the major axis requires the major axis to be
-exactly the output's disjoint axis (:class:`~vcsc.VCSRArray` for
-``self @ B``, :class:`~vcsc.VCSCArray` for ``B @ self`` -- see
+exactly the output's disjoint axis (:class:`~vsparse.VCSRArray` for
+``self @ B``, :class:`~vsparse.VCSCArray` for ``B @ self`` -- see
 :func:`_vcsr_matmul_delta`/:func:`_vcsc_rmatmul_delta`). The other direction
-on a given array (:class:`~vcsc.VCSCArray` for ``self @ B``,
-:class:`~vcsc.VCSRArray` for ``B @ self``) doesn't have that alignment --
+on a given array (:class:`~vsparse.VCSCArray` for ``self @ B``,
+:class:`~vsparse.VCSRArray` for ``B @ self``) doesn't have that alignment --
 rather than run a scatter kernel there (thread-local output-shaped
 accumulators, reduced across threads: cache-unfriendly, and memory-hungry
 enough for wide ``B`` to need throttling), :func:`_get_dual` builds and
 caches the *other* VCS format's storage for the same underlying array, once,
-via :meth:`~vcsc._base._VCSBase._transpose_major` -- a single global sort
-(see :func:`vcsc._construct.transpose_major`), not a per-call cost -- and
+via :meth:`~vsparse._base._VCSBase._transpose_major` -- a single global sort
+(see :func:`vsparse._construct.transpose_major`), not a per-call cost -- and
 every subsequent call in the misaligned direction runs the same
 major-aligned kernel against that cached dual instead. ``row_scale``/
 ``gene_scale``/``col_mean`` are per-row/per-column statistics, so they carry
@@ -37,7 +37,7 @@ import numba
 import numpy as np
 
 if TYPE_CHECKING:
-    from vcsc._vcs_norm import _VCSNormalizedBase
+    from vsparse._vcs_norm import _VCSNormalizedBase
 
 __all__ = ["dense_at_normalized", "normalized_at_dense"]
 

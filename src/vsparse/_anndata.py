@@ -5,7 +5,7 @@ from __future__ import annotations
 import anndata as ad
 import scipy.sparse as sp
 
-from vcsc._base import VCSCArray, VCSRArray, _VCSBase
+from vsparse._base import VCSCArray, VCSRArray, _VCSBase
 
 __all__ = ["from_anndata", "to_layer"]
 
@@ -41,7 +41,7 @@ def from_anndata(
 
     Returns
     -------
-    A :class:`~vcsc.VCSCArray` or :class:`~vcsc.VCSRArray`. The source
+    A :class:`~vsparse.VCSCArray` or :class:`~vsparse.VCSRArray`. The source
     matrix may already be CSC, CSR, or dense; it is converted as needed.
     """
     if layer is not None and use_raw:

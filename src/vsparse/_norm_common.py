@@ -1,9 +1,9 @@
 """Shared statistics/materialization logic for normalized VCS views.
 
-:mod:`vcsc._vcs_norm` (:class:`~vcsc.VCSCArrayNormalized`/:class:`~vcsc.
+:mod:`vsparse._vcs_norm` (:class:`~vsparse.VCSCArrayNormalized`/:class:`~vsparse.
 VCSRArrayNormalized`) wraps a raw VCS array and behaves like the
 read-depth-normalized, log-transformed, mean-centered matrix that
-:func:`vcsc._rapid_load.load_and_normalize` builds -- without ever
+:func:`vsparse._rapid_load.load_and_normalize` builds -- without ever
 materializing it. Centering makes every implicit structural zero a nonzero
 value, so a real materialization is an ``n_rows * n_cols`` dense array; the
 whole point of a "view" here is to avoid paying for that until (and unless)
@@ -24,7 +24,7 @@ any entry's final value is ``log10(1 + 1000 * raw / row_scale / gene_scale)
 - col_mean``, computable independently per entry. Computing the statistics
 themselves still requires touching every nonzero (twice: once for
 ``gene_scale``, once more for ``col_mean``, since the transform needs
-``gene_scale`` first) -- exactly like :mod:`vcsc._rapid_load`'s reference
+``gene_scale`` first) -- exactly like :mod:`vsparse._rapid_load`'s reference
 implementation -- so that part is done with parallel numba kernels below,
 specialized per storage format:
 
@@ -33,14 +33,14 @@ specialized per storage format:
   carry everything needed to compute both its ``gene_scale`` and its
   ``col_mean`` (:func:`_column_stats_major_is_col`).
 - major=rows (VCSR): each pass is a scatter-add across columns from
-  many rows, so it's parallelized like :mod:`vcsc._rapid_load`'s
+  many rows, so it's parallelized like :mod:`vsparse._rapid_load`'s
   ``_scaled_col_sums`` -- row-chunked with thread-local partial column
   arrays, reduced by summing across threads (:func:`_scaled_col_sums_vcs`,
   :func:`_transformed_col_sums_vcs`).
 
 These kernels only need ``major_ptr``/``values``/``value_ptr``/``indices``
-arrays, from the plain (:mod:`vcsc._base`) array types. The matmul kernels
-in :mod:`vcsc._vcs_matmul` walk that same already-materialized ``indices``
+arrays, from the plain (:mod:`vsparse._base`) array types. The matmul kernels
+in :mod:`vsparse._vcs_matmul` walk that same already-materialized ``indices``
 array directly. :class:`VCSCArrayNormalized`/:class:`VCSRArrayNormalized`
 each supply their own ``__matmul__``/``__rmatmul__`` wired to those kernels.
 """
@@ -178,7 +178,7 @@ class NormalizedViewBase:
     """Shared implementation for the normalized VCSC/VCSR views.
 
     Subclasses fix ``_format`` (``"csc"``/``"csr"``) and supply
-    ``__matmul__``/``__rmatmul__`` wired to :mod:`vcsc._vcs_matmul`.
+    ``__matmul__``/``__rmatmul__`` wired to :mod:`vsparse._vcs_matmul`.
     """
 
     _format: str

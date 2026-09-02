@@ -1,25 +1,25 @@
 # API reference
 
 ```{eval-rst}
-.. autoclass:: vcsc.VCSCArray
+.. autoclass:: vsparse.VCSCArray
    :members:
    :undoc-members:
    :show-inheritance:
    :inherited-members:
 
-.. autoclass:: vcsc.VCSRArray
+.. autoclass:: vsparse.VCSRArray
    :members:
    :undoc-members:
    :show-inheritance:
    :inherited-members:
 
-.. autofunction:: vcsc.from_anndata
+.. autofunction:: vsparse.from_anndata
 
-.. autofunction:: vcsc.to_layer
+.. autofunction:: vsparse.to_layer
 
-.. autofunction:: vcsc.load_and_normalize
+.. autofunction:: vsparse.load_and_normalize
 
-.. autoclass:: vcsc.VCSCAnnData
+.. autoclass:: vsparse.VCSCAnnData
    :members:
    :undoc-members:
    :show-inheritance:

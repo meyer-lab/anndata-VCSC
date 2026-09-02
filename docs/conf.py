@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import vcsc
+import vsparse
 
-project = "vcsc"
+project = "vsparse"
 copyright = "2026, Meyer lab"
 author = "Meyer lab"
-release = vcsc.__version__
+release = vsparse.__version__
 
 extensions = [
     "sphinx.ext.autodoc",

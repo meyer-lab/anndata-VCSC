@@ -1,4 +1,4 @@
-"""Tests for vcsc._construct.transpose_major: direct VCSC<->VCSR storage regrouping."""
+"""Tests for vsparse._construct.transpose_major: direct VCSC<->VCSR storage regrouping."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vcsc import VCSCArray, VCSRArray
+from vsparse import VCSCArray, VCSRArray
 
 
 @pytest.fixture(params=[VCSCArray, VCSRArray])

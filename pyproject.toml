@@ -1,7 +1,7 @@
 [project]
-name = "vcsc"
+name = "vsparse"
 version = "0.1.0"
-description = "Value-Compressed Sparse Column/Row overlay for AnnData"
+description = "Value-Compressed Sparse Column/Row (VCSC/VCSR) arrays, with optional AnnData integration"
 readme = "README.md"
 authors = [
     { name = "Aaron Meyer", email = "git@ameyer.me" }
@@ -44,7 +44,7 @@ select = ["E", "F", "I", "UP", "B", "NPY", "RUF"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["vcsc"]
+known-first-party = ["vsparse"]
 
 [tool.ty.environment]
 python-version = "3.12"
@@ -54,4 +54,4 @@ testpaths = ["tests"]
 addopts = "-ra"
 
 [tool.coverage.run]
-source = ["src/vcsc"]
+source = ["src/vsparse"]

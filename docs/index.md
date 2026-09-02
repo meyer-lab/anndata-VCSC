@@ -1,7 +1,9 @@
-# vcsc
+# vsparse
 
-A Value-Compressed Sparse Column/Row overlay for [AnnData](https://anndata.readthedocs.io),
-implemented in NumPy and accelerated with [Numba](https://numba.pydata.org/).
+`vsparse` provides `VCSCArray`/`VCSRArray`, standalone Value-Compressed Sparse Column/Row
+array types implemented in NumPy and accelerated with [Numba](https://numba.pydata.org/). It
+also provides an optional [AnnData](https://anndata.readthedocs.io) integration, but the array
+types themselves have no dependency on AnnData and can be used on their own.
 
 VCSC/VCSR are compressed-sparse layouts inspired by
 [IVSparse's VCSC](https://github.com/Seth-Wolfgang/IVSparse). In addition to the usual

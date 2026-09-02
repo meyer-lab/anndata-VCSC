@@ -5,7 +5,7 @@ Mirrors the preprocessing in `parafac2.normalize.prepare_dataset
 (minimum-count cell filtering, minimum-expression gene filtering, per-cell
 read-depth normalization, and a log10 transform) but is written directly
 against the on-disk VCSR/IVCSR layout instead of going through
-:meth:`~vcsc.VCSCAnnData.read_h5ad` + generic ``AnnData`` indexing.
+:meth:`~vsparse.VCSCAnnData.read_h5ad` + generic ``AnnData`` indexing.
 
 Why this needs its own code path
 ---------------------------------
@@ -59,8 +59,8 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import csr_array
 
-from vcsc import _ivcsc
-from vcsc._anndata_class import VCSCAnnData
+from vsparse import _ivcsc
+from vsparse._anndata_class import VCSCAnnData
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -367,7 +367,7 @@ def load_and_normalize(
     path
         Path to an ``.h5ad`` file whose ``X`` (or ``layers[x_key]``) was
         written with ``format="ivcsc"``/``"ivcsr"`` (see
-        :meth:`~vcsc.VCSCAnnData.write_h5ad`).
+        :meth:`~vsparse.VCSCAnnData.write_h5ad`).
     min_cell_counts
         Cells with total raw counts <= this are dropped.
     gene_threshold
@@ -499,7 +499,7 @@ def load_packed(path: str | PathLike[str], *, x_key: str = "X") -> VCSCAnnData:
     path
         Path to an ``.h5ad`` file whose ``X`` (or a top-level group named
         ``x_key``) was written with ``format="ivcsc"``/``"ivcsr"`` (see
-        :meth:`~vcsc.VCSCAnnData.write_h5ad`).
+        :meth:`~vsparse.VCSCAnnData.write_h5ad`).
     x_key
         Top-level h5ad group holding the IVCSR/IVCSC array (``"X"`` by default).
     """
