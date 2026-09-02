@@ -207,10 +207,14 @@ class _VCSBase:
         return np.bincount(group_of_major, weights=weighted, minlength=self.n_major)
 
     def _minor_sums(self) -> np.ndarray:
-        """Per-minor-index totals -- a scatter-add over every nonzero."""
-        group_sizes = np.diff(self.value_ptr)
-        expanded = np.repeat(self.values.astype(np.float64), group_sizes)
-        return np.bincount(self.indices, weights=expanded, minlength=self.n_minor)
+        """Per-minor-index totals -- a parallel scatter-add over every nonzero.
+
+        Runs against the value-compressed layout directly (see
+        :func:`vsparse._ops.minor_sums`); expanding to one value per nonzero
+        first would allocate an nnz-sized float64 array as scratch for a
+        reduction that never needs to keep it.
+        """
+        return _ops.minor_sums(self.values, self.value_ptr, self.indices, self.n_minor)
 
     def sum(self, axis: int | None = None) -> np.ndarray | float:
         """Sum of (structural) values along ``axis`` (0=rows, 1=columns), or overall if ``None``."""
