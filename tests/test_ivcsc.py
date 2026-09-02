@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 
-from vcsc import _ivcsc
-from vcsc._base import VCSCArray
+from vsparse import _ivcsc
+from vsparse._base import VCSCArray
 
 
 def test_pack_unpack_roundtrip(csc):

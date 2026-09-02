@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vcsc import VCSCAnnData, VCSCArray, VCSRArray
+from vsparse import VCSCAnnData, VCSCArray, VCSRArray
 
 
 @pytest.fixture

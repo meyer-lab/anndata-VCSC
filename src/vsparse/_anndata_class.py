@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from vcsc import _compression, _io
-from vcsc._base import VCSCArray, VCSRArray, _VCSBase
+from vsparse import _compression, _io
+from vsparse._base import VCSCArray, VCSRArray, _VCSBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -63,7 +63,7 @@ def _check_vcs_type(value: Any, name: str) -> None:
     if value is not None and not isinstance(value, _VCS_TYPES):
         raise TypeError(
             f"{name} must be a VCSCArray or VCSRArray, got {type(value).__name__}. "
-            f"Build one with VCSCArray.from_scipy(...) or vcsc.from_anndata(...)."
+            f"Build one with VCSCArray.from_scipy(...) or vsparse.from_anndata(...)."
         )
 
 
@@ -72,7 +72,7 @@ class VCSCAnnData(ad.AnnData):
 
     Standard :class:`~anndata.AnnData` validates every array assigned to
     ``X``/``layers``/etc. against a fixed allowlist of types (dense/sparse/
-    dask), so a plain ``AnnData`` cannot hold a :class:`~vcsc.VCSCArray`
+    dask), so a plain ``AnnData`` cannot hold a :class:`~vsparse.VCSCArray`
     directly. This subclass overrides the ``X`` property to store one
     without going through that validation. A "raw" VCSC/VCSR matrix, if any,
     is kept as ``.raw_X`` -- a plain attribute, *not* wired into anndata's own
@@ -294,7 +294,7 @@ class VCSCAnnData(ad.AnnData):
             Passed to ``h5py.Group.create_dataset`` for every array written.
             Defaults to Blosc2+LZ4 compression; pass ``{}`` to store
             uncompressed. Either way, compression is only ever applied to
-            numeric arrays -- see :func:`vcsc._compression.numeric_only_compression`.
+            numeric arrays -- see :func:`vsparse._compression.numeric_only_compression`.
         """
         import h5py
 

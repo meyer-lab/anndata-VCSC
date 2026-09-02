@@ -1,7 +1,11 @@
-# vcsc
+# vsparse
 
-A Value-Compressed Sparse Column/Row (VCSC/VCSR) overlay for [AnnData](https://anndata.readthedocs.io),
-implemented in NumPy and accelerated with [Numba](https://numba.pydata.org/).
+`vsparse` provides `VCSCArray`/`VCSRArray`: Value-Compressed Sparse Column/Row (VCSC/VCSR)
+array types, implemented in NumPy and accelerated with [Numba](https://numba.pydata.org/). The
+array types are standalone -- they can be built from and converted to SciPy sparse arrays and
+used entirely without [AnnData](https://anndata.readthedocs.io). `vsparse` also ships an
+optional AnnData integration (`from_anndata`, `to_layer`, and the `VCSCAnnData` subclass) for
+projects that want compressed arrays backed directly into an `AnnData` object.
 
 VCSC/VCSR are compressed-sparse layouts inspired by
 [IVSparse's VCSC](https://github.com/Seth-Wolfgang/IVSparse). In addition to the usual
@@ -33,18 +37,22 @@ uv sync --all-extras --dev
 
 ### Working with VCSC / VCSR arrays
 
+`VCSCArray`/`VCSRArray` are standalone array types -- they only need a SciPy sparse array
+(or an AnnData object, if you have one) to be built, and none of the operations below require
+AnnData at all:
+
 ```python
-import vcsc
+import vsparse
 import scipy.sparse as sp
 
-# Build from an AnnData object or SciPy sparse array
-adata = ...  # an AnnData object
-v = vcsc.from_anndata(adata)                   # VCSCArray (column-compressed) from adata.X
-vr = vcsc.from_anndata(adata, format="csr")    # VCSRArray (row-compressed)
+# Build directly from a SciPy sparse array -- no AnnData involved
+csc = sp.random(1000, 500, density=0.1, format="csc")
+v = vsparse.VCSCArray.from_scipy(csc)
 
-# Alternatively from scipy sparse matrices
-csc = sp.csc_array(adata.X)
-v = vcsc.VCSCArray.from_scipy(csc)
+# Or build from an AnnData object or SciPy sparse array
+adata = ...  # an AnnData object
+v = vsparse.from_anndata(adata)                   # VCSCArray (column-compressed) from adata.X
+vr = vsparse.from_anndata(adata, format="csr")    # VCSRArray (row-compressed)
 
 # Transposition is zero-copy (swaps major/minor axes and shares buffers)
 vr = v.T                                       # VCSRArray
@@ -68,26 +76,28 @@ sub = v[0:10, 0:10]                            # 2D slicing (falls back to scipy
 # Conversion & layers
 sp_csc = v.to_scipy()                          # -> scipy.sparse.csc_array (or to_csr())
 dense = v.toarray()                            # -> numpy.ndarray
-vcsc.to_layer(adata, v, key="counts_vcsc")     # Attach to AnnData layer
+vsparse.to_layer(adata, v, key="counts_vcsc")  # Attach to AnnData layer
 ```
 
 ### `VCSCAnnData`: AnnData with direct VCSC/VCSR backing
 
-`vcsc.VCSCAnnData` is an `AnnData` subclass whose `X` (and optionally `raw_X`) is backed directly by a `VCSCArray` or `VCSRArray`:
+For projects that want the compressed array wired directly into AnnData, `vsparse.VCSCAnnData`
+is an `AnnData` subclass whose `X` (and optionally `raw_X`) is backed directly by a
+`VCSCArray` or `VCSRArray`:
 
 ```python
-import vcsc
+import vsparse
 
-va = vcsc.VCSCAnnData.from_anndata(adata)      # Compresses X and raw.X
+va = vsparse.VCSCAnnData.from_anndata(adata)   # Compresses X and raw.X
 va.X                                           # VCSCArray
 va.raw_X                                       # VCSCArray (separate from anndata's .raw)
 
 # Persist to HDF5 (.h5ad) or Zarr with default Blosc2+LZ4 compression
 va.write_h5ad("compressed.h5ad")               # Read back with VCSCAnnData.read_h5ad
-va2 = vcsc.VCSCAnnData.read_h5ad("compressed.h5ad")
+va2 = vsparse.VCSCAnnData.read_h5ad("compressed.h5ad")
 
 va.write_zarr("compressed.zarr")               # Read back with VCSCAnnData.read_zarr
-va3 = vcsc.VCSCAnnData.read_zarr("compressed.zarr")
+va3 = vsparse.VCSCAnnData.read_zarr("compressed.zarr")
 
 # Escape hatch back to standard AnnData
 plain = va.to_anndata()
@@ -104,18 +114,18 @@ It is purely an archival storage format: `read_h5ad` / `read_zarr` decompress th
 va.write_h5ad("archived.h5ad", format="ivcsc")
 
 # Reads back directly as an ordinary VCSCAnnData
-va_loaded = vcsc.VCSCAnnData.read_h5ad("archived.h5ad")
+va_loaded = vsparse.VCSCAnnData.read_h5ad("archived.h5ad")
 ```
 
 ### Fast Filtering & Depth Normalization (`load_and_normalize`)
 
-For IVCSR-backed datasets, `vcsc.load_and_normalize` bypasses full array decompression for rapid preprocessing, reproducing the filtering and depth normalization from `parafac2.normalize.prepare_dataset`:
+For IVCSR-backed datasets, `vsparse.load_and_normalize` bypasses full array decompression for rapid preprocessing, reproducing the filtering and depth normalization from `parafac2.normalize.prepare_dataset`:
 
 - **Cell filtering without decoding**: Computes cell totals in $O(n_{\text{unique}})$ time directly from group sizes without unpacking varint indices.
 - **Fused filter & normalization**: Performs gene filtering, cell/gene depth-scaling, and $\log_{10}(1000x + 1)$ transform in parallel passes over the compact CSR representation.
 
 ```python
-adata_norm = vcsc.load_and_normalize(
+adata_norm = vsparse.load_and_normalize(
     "archived.h5ad",
     min_cell_counts=10.0,      # Filter cells with counts <= 10
     gene_threshold=0.05,       # Filter genes with counts <= 0.05 * n_cells

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vcsc import VCSCArray, VCSCArrayNormalized, VCSRArray, VCSRArrayNormalized
+from vsparse import VCSCArray, VCSCArrayNormalized, VCSRArray, VCSRArrayNormalized
 
 
 @pytest.fixture(params=[VCSCArray, VCSRArray])

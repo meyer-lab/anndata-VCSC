@@ -1301,7 +1301,7 @@ wheels = [
 ]
 
 [[package]]
-name = "vcsc"
+name = "vsparse"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

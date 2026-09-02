@@ -8,14 +8,14 @@ smaller on disk than a plain int32/int64 array.
 
 Indices within each (major-slice, value) group are unordered with respect to
 the original layout -- decompression re-sorts them per major slice regardless
-(see :mod:`vcsc._construct`) -- so packing is free to sort each group
+(see :mod:`vsparse._construct`) -- so packing is free to sort each group
 ascending before delta-encoding it. That keeps every delta non-negative and
 usually small, which is what makes the byte packing worth doing.
 
-This module only implements the byte codec; :mod:`vcsc._io` uses it to decode
+This module only implements the byte codec; :mod:`vsparse._io` uses it to decode
 a packed group straight back into a plain VCSCArray/VCSRArray with an
 ordinary ``indices`` array on read, so none of the compute paths in
-:mod:`vcsc._ops` need to know this encoding exists.
+:mod:`vsparse._ops` need to know this encoding exists.
 
 Decoding is the expensive direction (see :func:`unpack_indices`): a serial
 byte-at-a-time varint walk over the whole packed stream. For large arrays,

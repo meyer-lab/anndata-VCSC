@@ -3,7 +3,7 @@
 This lets a VCSCArray/VCSRArray be written/read anywhere anndata's generic
 element writer (``anndata.io.write_elem``/``read_elem``) is used -- e.g.
 nested inside ``adata.uns``, or as ``X``/a custom top-level key on a
-:class:`~vcsc.VCSCAnnData` -- and survive a round trip through HDF5 or zarr
+:class:`~vsparse.VCSCAnnData` -- and survive a round trip through HDF5 or zarr
 without any manual (de)serialization.
 
 This relies on ``anndata._io.specs.registry``, an internal (not yet public)
@@ -23,8 +23,8 @@ import h5py
 import numpy as np
 import zarr
 
-from vcsc import _ivcsc
-from vcsc._base import VCSCArray, VCSRArray, _VCSBase
+from vsparse import _ivcsc
+from vsparse._base import VCSCArray, VCSRArray, _VCSBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -83,7 +83,7 @@ def write_ivcs_elem(
     """Write ``v`` in the byte-packed IVCSC/IVCSR on-disk format.
 
     This trades write/read cost for a smaller file: ``indices`` is delta+
-    varint packed via :mod:`vcsc._ivcsc` instead of stored as a plain int
+    varint packed via :mod:`vsparse._ivcsc` instead of stored as a plain int
     array. It is meant for archival storage only -- reading it back (through
     the registry, e.g. via ``anndata.io.read_elem``) always reconstructs a
     normal VCSCArray/VCSRArray with a plain ``indices`` array.
@@ -92,7 +92,7 @@ def write_ivcs_elem(
     through anndata's generic ``write_elem`` type dispatch (which can only
     route by the Python type of ``v``, and both formats share the same
     VCSCArray/VCSRArray types) -- call it directly, e.g. from
-    :meth:`~vcsc.VCSCAnnData.write_h5ad`.
+    :meth:`~vsparse.VCSCAnnData.write_h5ad`.
     """
     g = f.require_group(k)
     g.attrs["shape"] = v.shape
