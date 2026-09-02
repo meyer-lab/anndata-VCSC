@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import vcsc
+import anndata_sc
 
-project = "vcsc"
+project = "anndata-sc"
 copyright = "2026, Meyer lab"
 author = "Meyer lab"
-release = vcsc.__version__
+release = anndata_sc.__version__
 
 extensions = [
     "sphinx.ext.autodoc",

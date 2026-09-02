@@ -5,7 +5,7 @@ from __future__ import annotations
 import anndata as ad
 import scipy.sparse as sp
 
-from vcsc._base import VCSCArray, VCSRArray, _VCSBase
+from anndata_sc._base import VCSCArray, VCSRArray, _VCSBase
 
 __all__ = ["from_anndata", "to_layer"]
 

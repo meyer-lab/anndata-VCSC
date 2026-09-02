@@ -23,8 +23,8 @@ import h5py
 import numpy as np
 import zarr
 
-from vcsc import _ivcsc
-from vcsc._base import VCSCArray, VCSRArray, _VCSBase
+from anndata_sc import _ivcsc
+from anndata_sc._base import VCSCArray, VCSRArray, _VCSBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -83,7 +83,7 @@ def write_ivcs_elem(
     """Write ``v`` in the byte-packed IVCSC/IVCSR on-disk format.
 
     This trades write/read cost for a smaller file: ``indices`` is delta+
-    varint packed via :mod:`vcsc._ivcsc` instead of stored as a plain int
+    varint packed via :mod:`anndata_sc._ivcsc` instead of stored as a plain int
     array. It is meant for archival storage only -- reading it back (through
     the registry, e.g. via ``anndata.io.read_elem``) always reconstructs a
     normal VCSCArray/VCSRArray with a plain ``indices`` array.

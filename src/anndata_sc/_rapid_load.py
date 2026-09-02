@@ -59,8 +59,8 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import csr_array
 
-from vcsc import _ivcsc
-from vcsc._anndata_class import VCSCAnnData
+from anndata_sc import _ivcsc
+from anndata_sc._anndata_class import VCSCAnnData
 
 if TYPE_CHECKING:
     from os import PathLike

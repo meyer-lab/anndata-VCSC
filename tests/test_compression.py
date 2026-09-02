@@ -6,7 +6,7 @@ import h5py
 import numpy as np
 import pytest
 
-from vcsc import _compression
+from anndata_sc import _compression
 
 
 def test_h5_dataset_kwargs_options():

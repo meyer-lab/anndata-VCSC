@@ -17,9 +17,9 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sp
 
-from vcsc import _construct, _ops
-from vcsc._indexutils import is_full_slice as _is_full_slice
-from vcsc._indexutils import normalize_major_idx as _normalize_major_idx
+from anndata_sc import _construct, _ops
+from anndata_sc._indexutils import is_full_slice as _is_full_slice
+from anndata_sc._indexutils import normalize_major_idx as _normalize_major_idx
 
 __all__ = ["VCSCArray", "VCSRArray"]
 
@@ -170,7 +170,7 @@ class _VCSBase:
 
         Unlike :attr:`T` (free: reinterprets the same buffers as the
         transposed matrix), this physically re-groups the stored values by
-        the other axis -- see :func:`vcsc._construct.transpose_major`. Used
+        the other axis -- see :func:`anndata_sc._construct.transpose_major`. Used
         to give a major-aligned (parallel-safe, no scatter) kernel something
         to run against, in the direction the array wasn't built for.
         """
@@ -181,8 +181,8 @@ class _VCSBase:
         return other_cls(self.shape, major_ptr, values, value_ptr, indices)
 
     def normalized(self) -> Any:
-        """A read-depth-normalized, log-transformed, mean-centered *view* -- see :mod:`vcsc._vcs_norm`."""
-        from vcsc._vcs_norm import VCSCArrayNormalized, VCSRArrayNormalized
+        """A read-depth-normalized, log-transformed, mean-centered *view* -- see :mod:`anndata_sc._vcs_norm`."""
+        from anndata_sc._vcs_norm import VCSCArrayNormalized, VCSRArrayNormalized
 
         cls = VCSCArrayNormalized if self._format == "csc" else VCSRArrayNormalized
         return cls(self)

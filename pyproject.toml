@@ -1,5 +1,5 @@
 [project]
-name = "vcsc"
+name = "anndata-sc"
 version = "0.1.0"
 description = "Value-Compressed Sparse Column/Row overlay for AnnData"
 readme = "README.md"
@@ -44,7 +44,7 @@ select = ["E", "F", "I", "UP", "B", "NPY", "RUF"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["vcsc"]
+known-first-party = ["anndata_sc"]
 
 [tool.ty.environment]
 python-version = "3.12"
@@ -54,4 +54,4 @@ testpaths = ["tests"]
 addopts = "-ra"
 
 [tool.coverage.run]
-source = ["src/vcsc"]
+source = ["src/anndata_sc"]

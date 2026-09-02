@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from vcsc import _compression, _io
-from vcsc._base import VCSCArray, VCSRArray, _VCSBase
+from anndata_sc import _compression, _io
+from anndata_sc._base import VCSCArray, VCSRArray, _VCSBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -294,7 +294,7 @@ class VCSCAnnData(ad.AnnData):
             Passed to ``h5py.Group.create_dataset`` for every array written.
             Defaults to Blosc2+LZ4 compression; pass ``{}`` to store
             uncompressed. Either way, compression is only ever applied to
-            numeric arrays -- see :func:`vcsc._compression.numeric_only_compression`.
+            numeric arrays -- see :func:`anndata_sc._compression.numeric_only_compression`.
         """
         import h5py
 

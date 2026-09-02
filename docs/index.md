@@ -1,4 +1,4 @@
-# vcsc
+# anndata-sc
 
 A Value-Compressed Sparse Column/Row overlay for [AnnData](https://anndata.readthedocs.io),
 implemented in NumPy and accelerated with [Numba](https://numba.pydata.org/).

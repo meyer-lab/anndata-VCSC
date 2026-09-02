@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from vcsc import VCSCArray, VCSRArray
+from anndata_sc import VCSCArray, VCSRArray
 
 
 def test_csc_roundtrip(dense, csc):

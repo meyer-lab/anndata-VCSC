@@ -1,4 +1,4 @@
-# vcsc
+# anndata-sc
 
 A Value-Compressed Sparse Column/Row (VCSC/VCSR) overlay for [AnnData](https://anndata.readthedocs.io),
 implemented in NumPy and accelerated with [Numba](https://numba.pydata.org/).
@@ -34,17 +34,17 @@ uv sync --all-extras --dev
 ### Working with VCSC / VCSR arrays
 
 ```python
-import vcsc
+import anndata_sc
 import scipy.sparse as sp
 
 # Build from an AnnData object or SciPy sparse array
 adata = ...  # an AnnData object
-v = vcsc.from_anndata(adata)                   # VCSCArray (column-compressed) from adata.X
-vr = vcsc.from_anndata(adata, format="csr")    # VCSRArray (row-compressed)
+v = anndata_sc.from_anndata(adata)                   # VCSCArray (column-compressed) from adata.X
+vr = anndata_sc.from_anndata(adata, format="csr")    # VCSRArray (row-compressed)
 
 # Alternatively from scipy sparse matrices
 csc = sp.csc_array(adata.X)
-v = vcsc.VCSCArray.from_scipy(csc)
+v = anndata_sc.VCSCArray.from_scipy(csc)
 
 # Transposition is zero-copy (swaps major/minor axes and shares buffers)
 vr = v.T                                       # VCSRArray
@@ -68,26 +68,26 @@ sub = v[0:10, 0:10]                            # 2D slicing (falls back to scipy
 # Conversion & layers
 sp_csc = v.to_scipy()                          # -> scipy.sparse.csc_array (or to_csr())
 dense = v.toarray()                            # -> numpy.ndarray
-vcsc.to_layer(adata, v, key="counts_vcsc")     # Attach to AnnData layer
+anndata_sc.to_layer(adata, v, key="counts_vcsc")     # Attach to AnnData layer
 ```
 
 ### `VCSCAnnData`: AnnData with direct VCSC/VCSR backing
 
-`vcsc.VCSCAnnData` is an `AnnData` subclass whose `X` (and optionally `raw_X`) is backed directly by a `VCSCArray` or `VCSRArray`:
+`anndata_sc.VCSCAnnData` is an `AnnData` subclass whose `X` (and optionally `raw_X`) is backed directly by a `VCSCArray` or `VCSRArray`:
 
 ```python
-import vcsc
+import anndata_sc
 
-va = vcsc.VCSCAnnData.from_anndata(adata)      # Compresses X and raw.X
+va = anndata_sc.VCSCAnnData.from_anndata(adata)      # Compresses X and raw.X
 va.X                                           # VCSCArray
 va.raw_X                                       # VCSCArray (separate from anndata's .raw)
 
 # Persist to HDF5 (.h5ad) or Zarr with default Blosc2+LZ4 compression
 va.write_h5ad("compressed.h5ad")               # Read back with VCSCAnnData.read_h5ad
-va2 = vcsc.VCSCAnnData.read_h5ad("compressed.h5ad")
+va2 = anndata_sc.VCSCAnnData.read_h5ad("compressed.h5ad")
 
 va.write_zarr("compressed.zarr")               # Read back with VCSCAnnData.read_zarr
-va3 = vcsc.VCSCAnnData.read_zarr("compressed.zarr")
+va3 = anndata_sc.VCSCAnnData.read_zarr("compressed.zarr")
 
 # Escape hatch back to standard AnnData
 plain = va.to_anndata()
@@ -104,18 +104,18 @@ It is purely an archival storage format: `read_h5ad` / `read_zarr` decompress th
 va.write_h5ad("archived.h5ad", format="ivcsc")
 
 # Reads back directly as an ordinary VCSCAnnData
-va_loaded = vcsc.VCSCAnnData.read_h5ad("archived.h5ad")
+va_loaded = anndata_sc.VCSCAnnData.read_h5ad("archived.h5ad")
 ```
 
 ### Fast Filtering & Depth Normalization (`load_and_normalize`)
 
-For IVCSR-backed datasets, `vcsc.load_and_normalize` bypasses full array decompression for rapid preprocessing, reproducing the filtering and depth normalization from `parafac2.normalize.prepare_dataset`:
+For IVCSR-backed datasets, `anndata_sc.load_and_normalize` bypasses full array decompression for rapid preprocessing, reproducing the filtering and depth normalization from `parafac2.normalize.prepare_dataset`:
 
 - **Cell filtering without decoding**: Computes cell totals in $O(n_{\text{unique}})$ time directly from group sizes without unpacking varint indices.
 - **Fused filter & normalization**: Performs gene filtering, cell/gene depth-scaling, and $\log_{10}(1000x + 1)$ transform in parallel passes over the compact CSR representation.
 
 ```python
-adata_norm = vcsc.load_and_normalize(
+adata_norm = anndata_sc.load_and_normalize(
     "archived.h5ad",
     min_cell_counts=10.0,      # Filter cells with counts <= 10
     gene_threshold=0.05,       # Filter genes with counts <= 0.05 * n_cells

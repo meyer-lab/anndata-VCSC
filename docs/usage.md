@@ -4,25 +4,25 @@
 
 ```python
 import anndata as ad
-import vcsc
+import anndata_sc
 
 adata = ad.read_h5ad("data.h5ad")
 
 # From adata.X, as a VCSCArray (column-compressed)
-v = vcsc.from_anndata(adata)
+v = anndata_sc.from_anndata(adata)
 
 # From adata.raw.X, as a VCSRArray (row-compressed)
-v = vcsc.from_anndata(adata, use_raw=True, format="csr")
+v = anndata_sc.from_anndata(adata, use_raw=True, format="csr")
 
 # From a specific layer
-v = vcsc.from_anndata(adata, layer="counts")
+v = anndata_sc.from_anndata(adata, layer="counts")
 ```
 
 ## Converting from/to scipy sparse
 
 ```python
 import scipy.sparse as sp
-from vcsc import VCSCArray
+from anndata_sc import VCSCArray
 
 csc = sp.csc_array(dense_or_sparse_matrix)
 v = VCSCArray.from_scipy(csc)
@@ -49,27 +49,27 @@ v[0:2, 0:2]           # general 2-D indexing (falls back to scipy internally)
 Attach a decompressed result back onto an `AnnData` object as a layer:
 
 ```python
-vcsc.to_layer(adata, v, key="vcsc_roundtrip")
+anndata_sc.to_layer(adata, v, key="vcsc_roundtrip")
 ```
 
 ## `VCSCAnnData`: X backed directly by a VCSCArray
 
-`vcsc.VCSCAnnData` is an `AnnData` subclass whose `X` (and, separately, `raw_X`) *is* a
+`anndata_sc.VCSCAnnData` is an `AnnData` subclass whose `X` (and, separately, `raw_X`) *is* a
 `VCSCArray`/`VCSRArray`, not a scipy array:
 
 ```python
-import vcsc
+import anndata_sc
 
-va = vcsc.VCSCAnnData.from_anndata(adata)  # compresses X and raw.X
+va = anndata_sc.VCSCAnnData.from_anndata(adata)  # compresses X and raw.X
 va.X       # a VCSCArray
 va.raw_X   # a VCSCArray (kept separately from anndata's own `.raw`)
 
 # Persist -- read back with the matching classmethod, not anndata.read_h5ad/read_zarr
 va.write_h5ad("compressed.h5ad")
-va2 = vcsc.VCSCAnnData.read_h5ad("compressed.h5ad")
+va2 = anndata_sc.VCSCAnnData.read_h5ad("compressed.h5ad")
 
 va.write_zarr("compressed.zarr")
-va3 = vcsc.VCSCAnnData.read_zarr("compressed.zarr")
+va3 = anndata_sc.VCSCAnnData.read_zarr("compressed.zarr")
 
 # Escape hatch: decompress to a normal, fully-featured AnnData
 plain = va.to_anndata()
@@ -96,7 +96,7 @@ decompressed from IVCSC/IVCSR immediately on load.
 
 ```python
 va.write_h5ad("archived.h5ad", format="ivcsc")
-va4 = vcsc.VCSCAnnData.read_h5ad("archived.h5ad")  # va4.X is a plain VCSCArray
+va4 = anndata_sc.VCSCAnnData.read_h5ad("archived.h5ad")  # va4.X is a plain VCSCArray
 ```
 `VCSCAnnData` works around this by overriding the `X` property; as a consequence,
 operations that need anndata's normal per-element type dispatch on `X` -- slicing into
@@ -109,14 +109,14 @@ a plain `AnnData`'s `.uns`, independent of `VCSCAnnData`.
 
 ## Fast IVCSR loading and normalization
 
-When working with large IVCSR-stored `.h5ad` files, `vcsc.load_and_normalize` provides
+When working with large IVCSR-stored `.h5ad` files, `anndata_sc.load_and_normalize` provides
 a fused loader and depth-normalization kernel reproducing the preprocessing in
 `parafac2.normalize.prepare_dataset`:
 
 ```python
-import vcsc
+import anndata_sc
 
-adata = vcsc.load_and_normalize(
+adata = anndata_sc.load_and_normalize(
     "archived.ivcsr.h5ad",
     min_cell_counts=10.0,
     gene_threshold=0.05,
