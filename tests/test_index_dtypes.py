@@ -219,3 +219,74 @@ def test_filter_and_compact_gene_indices_stay_int32_when_pointers_need_int64(mon
     assert new_indptr.dtype == np.int64  # keyed off nnz: correctly widened
     assert out_indices.dtype == np.int32  # keyed off the gene axis: unaffected
     np.testing.assert_array_equal(out_indices, [0, 1, 0, 1])
+
+
+# -- the invariant holds across every construction path ----------------------
+#
+# Narrowing lives in `_VCSBase.__init__` rather than in each method, so any
+# operation that builds a new array through `type(self)(...)` inherits it.
+# These pin that for the operations added since -- astype, minor-axis
+# selection, and the elementwise ops that round-trip through scipy -- so a
+# future method can't quietly reintroduce int64 indices for a small axis.
+
+
+def _int64_indexed(vcls, dense):
+    """A VCS array built from an input carrying int64 indices."""
+    return vcls.from_scipy(_with_int64_indices(_scipy_for(vcls, dense)))
+
+
+def test_astype_keeps_narrow_indices(vcls, dense):
+    v = _int64_indexed(vcls, dense)
+    out = v.astype(np.float32)
+    assert out.indices.dtype == np.int32
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out.toarray(), dense.astype(np.float32))
+
+
+def test_minor_axis_selection_keeps_narrow_indices(vcls, dense):
+    v = _int64_indexed(vcls, dense)
+    n_cols = dense.shape[1]
+    cols = np.arange(0, n_cols, 2)
+
+    out = v[:, cols]
+    assert out.indices.dtype == np.int32
+    np.testing.assert_allclose(out.toarray(), dense[:, cols])
+
+
+def test_both_axes_selection_keeps_narrow_indices(vcls, dense):
+    if dense.shape[0] < 2 or dense.shape[1] < 2:
+        pytest.skip("shape too small")
+    v = _int64_indexed(vcls, dense)
+    rows, cols = np.arange(0, dense.shape[0], 2), np.arange(0, dense.shape[1], 2)
+
+    out = v[rows, :][:, cols]
+    assert out.indices.dtype == np.int32
+    np.testing.assert_allclose(out.toarray(), dense[np.ix_(rows, cols)])
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        pytest.param(lambda v, d: v * 2.0, id="scalar_mul"),
+        pytest.param(lambda v, d: v / 2.0, id="scalar_div"),
+        pytest.param(lambda v, d: -v, id="neg"),
+        pytest.param(lambda v, d: v + v, id="add_vcs"),
+        pytest.param(lambda v, d: v - v, id="sub_vcs"),
+        pytest.param(lambda v, d: v.copy(), id="copy"),
+        pytest.param(lambda v, d: v.log1p(), id="log1p"),
+        pytest.param(lambda v, d: v._transpose_major(), id="transpose_major"),
+        pytest.param(lambda v, d: v.T, id="T"),
+    ],
+)
+def test_derived_arrays_keep_narrow_indices(vcls, dense, op):
+    """Every op returning a VCS array goes through __init__, so all of them narrow."""
+    result = op(_int64_indexed(vcls, dense), dense)
+    assert result.indices.dtype == np.int32
+
+
+def test_scipy_roundtrip_ops_narrow_a_wide_result(vcls, dense):
+    """The elementwise ops rebuild via from_scipy, where scipy may hand back int64."""
+    v = _int64_indexed(vcls, dense)
+    summed = v + v
+    assert summed.indices.dtype == np.int32
+    np.testing.assert_allclose(summed.toarray(), dense * 2)
