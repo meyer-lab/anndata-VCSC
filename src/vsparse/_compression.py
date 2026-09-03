@@ -11,11 +11,42 @@ categoricals (category labels, ``obs``/``var`` string columns, the
 ``_index``). At least some HDF5 filter-plugin builds (seen in this
 environment: h5py 3.16 / HDF5 2.0.0 / hdf5plugin's Blosc2) segfault
 (``SIGFPE``) when the Blosc2 filter is applied to a variable-length-string
-dataset -- and there's no benefit to compressing already-tiny label arrays
-anyway. :func:`numeric_only_compression` patches the relevant
+dataset. :func:`numeric_only_compression` patches the relevant
 ``create_dataset``/``create_array`` calls for the duration of a write so
 string/object arrays always land uncompressed, regardless of what
 ``dataset_kwargs`` was passed in -- callers don't have to know about this.
+
+Why strings stay uncompressed, and what to do about size instead
+----------------------------------------------------------------
+
+The crash was re-checked against h5py 3.16.0 / HDF5 2.0.0 / hdf5plugin
+7.0.0 by writing a 20k-element variable-length string dataset under each
+available filter, one subprocess per filter:
+
+===========  ===========================================
+``none``     fine
+``gzip``     fine
+``lzf``      fine
+``blosc2``   dies with ``SIGFPE`` before returning
+===========  ===========================================
+
+So the workaround is still required, and it is specifically Blosc2 -- not
+HDF5 filters generally. gzip and lzf *would* be safe here, but neither is
+worth adopting: this codec choice only ever applies to the string arrays
+themselves, and the size problem those cause isn't a compression problem.
+A low-cardinality annotation stored as one variable-length string per row
+(cell type, sample ID, batch) pays for the string *and* its heap entry on
+every row, and vlen payloads live in HDF5's global heap where per-dataset
+compression doesn't reach them well in the first place.
+
+Encoding those columns as pandas categoricals fixes it at the source: the
+per-row data becomes an integer code array -- numeric, so the existing
+Blosc2 path compresses it -- and the labels are stored once. Measured on
+200k cells x 2k genes with three low-cardinality string ``obs`` columns,
+that takes the whole file from **41.82 MB to 13.61 MB**. This is why
+:meth:`vsparse.VCSCAnnData.write_h5ad` converts them by default (its
+``convert_strings_to_categoricals`` parameter, matching anndata's own
+writers), and it is a bigger win than any string codec could be.
 """
 
 from __future__ import annotations

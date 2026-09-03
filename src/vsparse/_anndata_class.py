@@ -244,10 +244,19 @@ class VCSCAnnData(ad.AnnData):
         g: Any,
         *,
         format: str = "vcsc",
+        convert_strings_to_categoricals: bool = True,
         dataset_kwargs: Mapping[str, Any] = MappingProxyType({}),
     ) -> None:
         if format not in _STORE_FORMATS:
             raise ValueError(f"format must be one of {_STORE_FORMATS}, got {format!r}")
+        if convert_strings_to_categoricals:
+            # anndata's own write_h5ad/write_zarr do this (same parameter, same
+            # default); writing field-by-field means we have to do it too, or
+            # low-cardinality obs/var columns land as one variable-length
+            # string per row. That costs several times the whole file --
+            # they're also the one thing here that can't be Blosc-compressed
+            # (see vsparse._compression), so nothing downstream recovers it.
+            self.strings_to_categoricals()
         write_array = ad.io.write_elem if format == "vcsc" else _io.write_ivcs_elem
         if self._vcs_X is not None:
             write_array(g, "X", self._vcs_X, dataset_kwargs=dataset_kwargs)
@@ -276,6 +285,7 @@ class VCSCAnnData(ad.AnnData):
         filename: str | PathLike[str],
         *,
         format: str = "vcsc",
+        convert_strings_to_categoricals: bool = True,
         dataset_kwargs: Mapping[str, Any] | None = None,
         **_kwargs: Any,
     ) -> None:
@@ -290,6 +300,15 @@ class VCSCAnnData(ad.AnnData):
             the cost of extra work on write/read. Either way, ``X``/``raw_X``
             come back from :meth:`read_h5ad` as ordinary VCSCArray/VCSRArray
             objects -- ``"ivcsc"`` is purely an on-disk storage format.
+        convert_strings_to_categoricals
+            Convert ``obs``/``var`` string columns to categorical before
+            writing, in place, exactly as ``anndata``'s own writers do (same
+            name, same default). Only columns with fewer categories than rows
+            are converted, so it never makes a column larger -- and for the
+            typical low-cardinality annotation (cell type, sample ID) it is
+            worth several times the size of the whole file, because
+            variable-length strings are the one thing here that can't be
+            compressed (see :mod:`vsparse._compression`).
         dataset_kwargs
             Passed to ``h5py.Group.create_dataset`` for every array written.
             Defaults to Blosc2+LZ4 compression; pass ``{}`` to store
@@ -304,7 +323,12 @@ class VCSCAnnData(ad.AnnData):
             _compression.numeric_only_compression("h5"),
             h5py.File(filename, "w") as f,
         ):
-            self._write_group(f, format=format, dataset_kwargs=dataset_kwargs)
+            self._write_group(
+                f,
+                format=format,
+                convert_strings_to_categoricals=convert_strings_to_categoricals,
+                dataset_kwargs=dataset_kwargs,
+            )
 
     @classmethod
     def read_h5ad(cls, filename: str | PathLike[str]) -> VCSCAnnData:
@@ -319,14 +343,15 @@ class VCSCAnnData(ad.AnnData):
         store: Any,
         *,
         format: str = "vcsc",
+        convert_strings_to_categoricals: bool = True,
         dataset_kwargs: Mapping[str, Any] | None = None,
         **_kwargs: Any,
     ) -> None:
         """Write to a zarr store. Read back with :meth:`read_zarr`.
 
-        See :meth:`write_h5ad` for ``format``/``dataset_kwargs`` (including the
-        numeric-only compression behavior); the default compression here is
-        Blosc+LZ4 via ``numcodecs``.
+        See :meth:`write_h5ad` for ``format``/``convert_strings_to_categoricals``/
+        ``dataset_kwargs`` (including the numeric-only compression behavior);
+        the default compression here is Blosc+LZ4 via ``numcodecs``.
         """
         import zarr
 
@@ -334,7 +359,12 @@ class VCSCAnnData(ad.AnnData):
             dataset_kwargs = _compression.zarr_dataset_kwargs()
         with _compression.numeric_only_compression("zarr"):
             f = zarr.open_group(store, mode="w")
-            self._write_group(f, format=format, dataset_kwargs=dataset_kwargs)
+            self._write_group(
+                f,
+                format=format,
+                convert_strings_to_categoricals=convert_strings_to_categoricals,
+                dataset_kwargs=dataset_kwargs,
+            )
 
     @classmethod
     def read_zarr(cls, store: Any) -> VCSCAnnData:
