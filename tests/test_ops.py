@@ -96,10 +96,14 @@ def test_scalar_mul_zero_returns_empty_like(dense, vcls):
 
 
 def test_unsupported_scalar_operands_raise(dense, vcls):
-    """Verify that non-scalar operand types in arithmetic operators return NotImplemented or raise TypeError."""
+    """Non-scalar operands are now elementwise: non-broadcastable shapes/bad types raise, they don't silently no-op."""
     v = _make(vcls, dense)
-    assert v.__mul__([1, 2]) is NotImplemented
-    assert v.__truediv__([1, 2]) is NotImplemented
+    if dense.shape != (1, 1):  # a (1, 1) array broadcasts against any shape
+        bad_shape = np.ones((dense.shape[0] + 3, dense.shape[1] + 3))
+        with pytest.raises(ValueError, match="inconsistent shapes"):
+            _ = v * bad_shape
+        with pytest.raises(ValueError, match="inconsistent shapes"):
+            _ = v / bad_shape
     with pytest.raises(TypeError):
         _ = v * {"a": 1}
     with pytest.raises(TypeError):
