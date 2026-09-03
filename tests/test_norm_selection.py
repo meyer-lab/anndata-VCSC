@@ -83,16 +83,15 @@ def test_select_matches_normalizing_the_selection_directly(vcls):
 def test_select_equals_selecting_on_the_raw_array_first(vcls):
     """select() is exactly the arr[sel].normalized() route, reachable from the view.
 
-    Note the raw route isn't uniformly available: selecting rows of a
-    VCSCArray is a *minor*-axis selection, which drops out as scipy and has
-    no ``.normalized()`` at all. ``select`` works either way.
+    Since #23 the raw route stays VCS-native on both axes, so this is now a
+    direct comparison; ``select`` remains the discoverable spelling, and the
+    one that doesn't require reaching for the view's private ``_arr``.
     """
     dense, mask = _mixed_population()
     arr = vcls.from_scipy(_scipy_for(vcls, dense))
 
     raw_sub = arr[mask, :]
-    if not isinstance(raw_sub, vcls):
-        raw_sub = vcls.from_scipy(raw_sub)
+    assert isinstance(raw_sub, vcls)
 
     np.testing.assert_allclose(
         arr.normalized().select(mask).toarray(),
@@ -168,3 +167,23 @@ def test_getitem_and_select_disagree_substantially_on_a_real_selection(vcls):
 
     assert _relative_frobenius(renormalized, want) < 1e-12
     assert _relative_frobenius(windowed, want) > 0.1
+
+
+def test_select_survives_native_two_axis_indexing(vcls):
+    """#23 made both-axes selection VCS-native; select() must still get outer semantics.
+
+    A single ``arr[rows, cols]`` used to fall through to scipy, which
+    broadcasts two index arrays against each other pointwise. It now
+    composes a major- and a minor-axis selection instead, which is the
+    sub-block ``select`` needs -- worth pinning, since the difference is
+    silent and only shows up when both axes are arrays.
+    """
+    dense, _ = _mixed_population()
+    nv = vcls.from_scipy(_scipy_for(vcls, dense)).normalized()
+    rows = np.arange(0, dense.shape[0], 7)
+    cols = np.arange(0, dense.shape[1], 5)
+    assert rows.shape != cols.shape  # a pointwise broadcast would fail outright
+
+    np.testing.assert_allclose(
+        nv.select(rows, cols).toarray(), _reference(dense[np.ix_(rows, cols)]), atol=1e-10
+    )

@@ -61,8 +61,6 @@ from typing import Any
 import numba
 import numpy as np
 
-from vsparse._indexutils import is_full_slice as _is_full_slice
-
 __all__ = ["NormalizedViewBase"]
 
 
@@ -293,16 +291,11 @@ class NormalizedViewBase:
         Returns a view, not a dense array, so it still composes with
         ``@``/:meth:`toarray`.
         """
-        # One axis at a time, so two index arrays select a sub-block rather
-        # than being broadcast against each other pointwise the way a single
-        # ``arr[rows, cols]`` would.
-        sub: Any = self._arr
-        if not _is_full_slice(rows):
-            sub = sub[_prep_key(rows), :]
-        if not _is_full_slice(cols):
-            sub = sub[:, _prep_key(cols)]
+        sub: Any = self._arr[_prep_key(rows), _prep_key(cols)]
         if not isinstance(sub, type(self._arr)):
-            # Selecting the minor axis drops out of the raw array as scipy.
+            # Defensive, as in vsparse._anndata_class._subset_2d: the raw
+            # array's __getitem__ only leaves the VCS types when both axes
+            # collapse to a scalar, which _prep_key rules out above.
             sub = type(self._arr).from_scipy(sub)
         return type(self)(sub)
 
