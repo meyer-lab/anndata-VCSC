@@ -360,6 +360,30 @@ class _VCSBase:
         )
         return type(self)(new_shape, new_major_ptr, new_values, new_value_ptr, new_indices)
 
+    def _major_range(self, start: int, stop: int) -> _VCSBase:
+        """The contiguous major-slice range ``[start, stop)``, without copying values.
+
+        Unlike :meth:`_select_major` (arbitrary index arrays, so it has to
+        gather), a contiguous range is already contiguous in every stored
+        array: ``values``/``indices`` come back as plain views into this
+        array's buffers, and only the two small pointer arrays are rebuilt
+        (rebased to the new start). That makes it cheap enough to use as the
+        chunking primitive for a streaming pass over the major axis.
+        """
+        u0, u1 = int(self.major_ptr[start]), int(self.major_ptr[stop])
+        k0, k1 = int(self.value_ptr[u0]), int(self.value_ptr[u1])
+        n_sel = stop - start
+        new_shape = (
+            (self.n_minor, n_sel) if self._format == "csc" else (n_sel, self.n_minor)
+        )
+        return type(self)(
+            new_shape,
+            self.major_ptr[start : stop + 1] - u0,
+            self.values[u0:u1],
+            self.value_ptr[u0 : u1 + 1] - k0,
+            self.indices[k0:k1],
+        )
+
     def __getitem__(self, key):
         if isinstance(key, tuple):
             if len(key) != 2:
