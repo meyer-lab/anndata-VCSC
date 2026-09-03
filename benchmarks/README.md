@@ -50,16 +50,24 @@ context (e.g. `expanded_nnz_mb`, which says what a per-nonzero temporary
 *would* have cost, so the gated number next to it can be read in proportion).
 
 The checked-in ceilings were recorded on `main` before the v0.2 memory fixes
-landed, so two of them are deliberately generous:
+landed, so the memory ones are deliberately generous. Measured on a
+4M-nonzero array, for results of length `n_minor`:
 
-| metric | recorded on `main` |
-|---|---|
-| `minor_sum_peak_mb.peak_alloc_mb` | 66 MB, for a reduction on a 4M-nonzero array |
-| `misaligned_matmul_peak_mb.peak_alloc_mb` | 204 MB, against a 16 MB array |
+| metric | on `main` | with the fix | why it's high |
+|---|---|---|---|
+| `minor_sum_peak_mb` | 66 MB | 0.8 MB | `np.repeat` then `np.bincount` |
+| `minor_extrema_peak_mb` | 66 MB | 1.6 MB | `np.repeat` then `ufunc.at` |
+| `minor_getnnz_peak_mb` | 32 MB | 0.8 MB | `np.bincount` promotes int32 → intp |
+| `minor_selection_peak_mb` | 62 MB | — | `_select_minor`, still open (ISSUE-30) |
+| `misaligned_matmul_peak_mb` | 204 MB | 115 MB | full opposite-format copy |
 
-Both should drop by one to two orders of magnitude once the reduction and
-misaligned-matmul fixes are in. **Re-record after those merge** — until then
-these gate against getting worse, not against the current numbers being good.
+**Re-record once those land** — until then these gate against getting worse,
+not against the current numbers being good.
+
+Three of those five are operations added *after* this suite was designed,
+which is the case for having it: the expand-then-scatter pattern reappeared
+in new code because nothing measured it. A correctness test can't see it —
+every one of those operations returns the right answer.
 
 ## Adding a case
 
