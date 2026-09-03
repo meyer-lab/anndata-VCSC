@@ -6,6 +6,7 @@ import numba
 import numpy as np
 
 __all__ = [
+    "accumulator_threads",
     "major_matmat",
     "major_matvec",
     "minor_counts",
@@ -23,7 +24,7 @@ __all__ = [
 _ACCUMULATOR_BUDGET_BYTES = 64 << 20  # 64 MiB
 
 
-def _accumulator_threads(n_minor: int, bytes_per_element: int = 8) -> int:
+def accumulator_threads(n_minor: int, bytes_per_element: int = 8) -> int:
     """Threads to run a minor-axis scatter with, capped by accumulator size.
 
     ``bytes_per_element`` is the per-slot cost of one thread's accumulator
@@ -133,7 +134,7 @@ def _minor_sums(values, value_ptr, indices, n_minor, nthreads):
 
 def minor_sums(values, value_ptr, indices, n_minor):
     """Per-minor-index totals as float64, without an nnz-sized temporary."""
-    return _minor_sums(values, value_ptr, indices, n_minor, _accumulator_threads(n_minor))
+    return _minor_sums(values, value_ptr, indices, n_minor, accumulator_threads(n_minor))
 
 
 # -- minor-axis extrema and counts -------------------------------------------
@@ -182,7 +183,7 @@ def minor_extrema(values, value_ptr, indices, n_minor, initial, is_max):
     The extremum ignores implicit zeros -- the count is what lets the caller
     decide where one belongs.
     """
-    nthreads = _accumulator_threads(n_minor, values.dtype.itemsize + 8)
+    nthreads = accumulator_threads(n_minor, values.dtype.itemsize + 8)
     part_val, part_cnt = _minor_extrema(
         values, value_ptr, indices, n_minor, nthreads, initial, is_max
     )
@@ -207,7 +208,7 @@ def _minor_counts(value_ptr, indices, n_minor, nthreads):
 
 def minor_counts(value_ptr, indices, n_minor):
     """Stored-element count per minor index, without an nnz-sized temporary."""
-    return _minor_counts(value_ptr, indices, n_minor, _accumulator_threads(n_minor))
+    return _minor_counts(value_ptr, indices, n_minor, accumulator_threads(n_minor))
 
 
 def major_matvec(major_ptr, values, value_ptr, indices, x, n_major, n_minor):

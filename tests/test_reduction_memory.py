@@ -23,7 +23,7 @@ import scipy.sparse as sp
 from vsparse import VCSCArray, VCSRArray
 from vsparse._ops import (
     _ACCUMULATOR_BUDGET_BYTES,
-    _accumulator_threads,
+    accumulator_threads,
     minor_counts,
     minor_extrema,
     minor_sums,
@@ -94,7 +94,7 @@ def test_minor_sums_direct_call(vcls):
 @pytest.mark.parametrize("bytes_per_element", [8, 16])
 def test_accumulator_block_stays_within_budget(n_minor, bytes_per_element):
     """Thread-local accumulators must not become the new unbounded allocation."""
-    nthreads = _accumulator_threads(n_minor, bytes_per_element)
+    nthreads = accumulator_threads(n_minor, bytes_per_element)
     assert nthreads >= 1
     assert nthreads <= numba.get_num_threads()
     if nthreads > 1:
@@ -104,16 +104,16 @@ def test_accumulator_block_stays_within_budget(n_minor, bytes_per_element):
 def test_wider_accumulators_get_fewer_threads():
     """A kernel keeping more per-slot state must not blow the same budget."""
     n_minor = _ACCUMULATOR_BUDGET_BYTES // (8 * 4)  # 4 threads' worth at 8 bytes
-    assert _accumulator_threads(n_minor, 16) <= _accumulator_threads(n_minor, 8)
+    assert accumulator_threads(n_minor, 16) <= accumulator_threads(n_minor, 8)
 
 
 def test_wide_minor_axis_falls_back_to_one_thread():
     """A minor axis too wide to afford even two accumulators runs serially."""
-    assert _accumulator_threads(_ACCUMULATOR_BUDGET_BYTES) == 1
+    assert accumulator_threads(_ACCUMULATOR_BUDGET_BYTES) == 1
 
 
 def test_narrow_minor_axis_uses_all_threads():
-    assert _accumulator_threads(64) == numba.get_num_threads()
+    assert accumulator_threads(64) == numba.get_num_threads()
 
 
 # -- the memory bound this replaces ------------------------------------------

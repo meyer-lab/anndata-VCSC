@@ -61,6 +61,7 @@ from scipy.sparse import csr_array
 
 from vsparse import _ivcsc
 from vsparse._anndata_class import VCSCAnnData
+from vsparse._ops import accumulator_threads
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -464,11 +465,11 @@ def load_and_normalize(
         data = _build_data(values, value_ptr, indices.shape[0])
         row_indptr = value_ptr[major_ptr]
 
-        gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
+        gene_totals_raw = _weighted_bincount(indices, data, n_genes, accumulator_threads(n_genes))
         gene_mask = gene_totals_raw > (gene_threshold * n_cells)
         if min_cells is not None:
             gene_detection_counts = _gene_detection_counts(
-                indices, data, n_genes, numba.get_num_threads()
+                indices, data, n_genes, accumulator_threads(n_genes)
             )
             gene_mask &= gene_detection_counts >= min_cells
         metadata_cell_mask = cell_mask
@@ -495,11 +496,11 @@ def load_and_normalize(
         )
         del packed
 
-        gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
+        gene_totals_raw = _weighted_bincount(indices, data, n_genes, accumulator_threads(n_genes))
         gene_mask = gene_totals_raw > (gene_threshold * selected_rows.shape[0])
         if min_cells is not None:
             gene_detection_counts = _gene_detection_counts(
-                indices, data, n_genes, numba.get_num_threads()
+                indices, data, n_genes, accumulator_threads(n_genes)
             )
             gene_mask &= gene_detection_counts >= min_cells
 
