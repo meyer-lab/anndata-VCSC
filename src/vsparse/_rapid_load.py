@@ -188,6 +188,24 @@ def _weighted_bincount(
     return partial.sum(axis=0)
 
 
+@numba.njit(cache=True, parallel=True)
+def _gene_detection_counts(
+    indices: np.ndarray, data: np.ndarray, n_genes: int, nthreads: int
+) -> np.ndarray:
+    """Number of cells with positive expression for each gene."""
+    n = indices.shape[0]
+    chunk = (n + nthreads - 1) // nthreads
+    partial = np.zeros((nthreads, n_genes), dtype=np.int64)
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
+        start = t * chunk
+        end = min(n, start + chunk)
+        local = partial[t]
+        for k in range(start, end):
+            if data[k] > 0:
+                local[indices[k]] += 1
+    return partial.sum(axis=0)
+
+
 # -- fused row+column filter/compaction --------------------------------------
 
 
@@ -348,6 +366,7 @@ def load_and_normalize(
     *,
     min_cell_counts: float = 10.0,
     gene_threshold: float = 0.0,
+    min_cells: int | None = None,
     obs_filter: Callable[[pd.DataFrame], object] | None = None,
     x_key: str = "X",
 ) -> ad.AnnData:
@@ -355,9 +374,10 @@ def load_and_normalize(
 
     Reproduces ``parafac2.normalize.prepare_dataset``: cells with total
     counts <= ``min_cell_counts`` and genes with total counts <=
-    ``gene_threshold * n_cells`` (both measured on the raw, unfiltered
-    counts after any ``obs_filter``, matching the reference implementation)
-    are dropped; the remaining matrix is row-normalized to the median per-cell depth, then
+    ``gene_threshold * n_cells`` are dropped. When ``min_cells`` is given,
+    genes expressed in fewer than ``min_cells`` cells are also dropped. Gene
+    filters are measured on the raw counts after any ``obs_filter``.
+    The remaining matrix is row-normalized to the median per-cell depth, then
     column-normalized by gene sum, then transformed as ``log10(1000x + 1)``.
     Surrounding metadata (``obs``, ``var``, ``obsm``, etc.) is sliced to
     match the retained cells and genes.
@@ -374,6 +394,9 @@ def load_and_normalize(
         Minimum threshold fraction for gene inclusion, as in
         ``parafac2.normalize.prepare_dataset``: genes with total raw counts
         <= ``gene_threshold * n_cells`` are dropped.
+    min_cells
+        Optional gene filter. Genes expressed in fewer than this
+        many cells are dropped. Expression is defined as a raw count > 0.
     obs_filter
         Optional callable receiving ``obs`` and returning a one-dimensional
         boolean mask. When provided, rows are subset before cell filtering,
@@ -404,6 +427,12 @@ def load_and_normalize(
     """
     import h5py
     import hdf5plugin  # noqa: F401  -- registers the Blosc2 HDF5 filter
+
+    if min_cells is not None:
+        if isinstance(min_cells, bool) or not isinstance(min_cells, int):
+            raise TypeError("min_cells must be an integer or None")
+        if min_cells < 0:
+            raise ValueError("min_cells must be non-negative")
 
     with h5py.File(Path(path), "r") as f:
         g = f[x_key]
@@ -437,6 +466,11 @@ def load_and_normalize(
 
         gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
         gene_mask = gene_totals_raw > (gene_threshold * n_cells)
+        if min_cells is not None:
+            gene_detection_counts = _gene_detection_counts(
+                indices, data, n_genes, numba.get_num_threads()
+            )
+            gene_mask &= gene_detection_counts >= min_cells
         metadata_cell_mask = cell_mask
     else:
         obs = kwargs.get("obs")
@@ -463,6 +497,11 @@ def load_and_normalize(
 
         gene_totals_raw = _weighted_bincount(indices, data, n_genes, numba.get_num_threads())
         gene_mask = gene_totals_raw > (gene_threshold * selected_rows.shape[0])
+        if min_cells is not None:
+            gene_detection_counts = _gene_detection_counts(
+                indices, data, n_genes, numba.get_num_threads()
+            )
+            gene_mask &= gene_detection_counts >= min_cells
 
         metadata_cell_mask = np.zeros(n_cells, dtype=np.bool_)
         metadata_cell_mask[selected_rows[cell_mask]] = True
