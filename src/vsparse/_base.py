@@ -249,8 +249,13 @@ class _VCSBase:
         )
 
     def _minor_nnz(self) -> np.ndarray:
-        """Per-minor-index stored-element counts -- a scatter-add over every nonzero."""
-        return np.bincount(self.indices, minlength=self.n_minor).astype(np.int64)
+        """Per-minor-index stored-element counts -- a parallel scatter over every nonzero.
+
+        ``np.bincount`` would be the obvious call here, but it promotes an
+        int32 ``indices`` to ``intp`` first, which is an nnz-sized temporary
+        for a result of length ``n_minor`` (see :func:`vsparse._ops.minor_counts`).
+        """
+        return _ops.minor_counts(self.value_ptr, self.indices, self.n_minor)
 
     def getnnz(self, axis: int | None = None) -> np.ndarray | int:
         """Count of stored elements along ``axis``, or overall if ``None``."""
@@ -294,12 +299,21 @@ class _VCSBase:
         return out
 
     def _minor_reduce(self, ufunc: np.ufunc, initial: Any) -> np.ndarray:
-        """Per-minor-index max/min, accounting for implicit zeros in sparse slices."""
-        group_sizes = np.diff(self.value_ptr)
-        expanded = np.repeat(self.values, group_sizes)
-        out = np.full(self.n_minor, initial, dtype=self.values.dtype)
-        ufunc.at(out, self.indices, expanded)
-        counts = np.bincount(self.indices, minlength=self.n_minor)
+        """Per-minor-index max/min, accounting for implicit zeros in sparse slices.
+
+        The extremum over the stored values and the per-index count come from
+        one parallel pass over the value groups
+        (:func:`vsparse._ops.minor_extrema`); expanding to one value per
+        nonzero first, to drive ``ufunc.at``, would allocate an nnz-sized
+        array as scratch for an ``n_minor``-sized result.
+
+        The implicit-zero correction stays here rather than in the kernel: a
+        minor index that isn't stored in every major slice has at least one
+        structural zero, which competes in the reduction.
+        """
+        out, counts = _ops.minor_extrema(
+            self.values, self.value_ptr, self.indices, self.n_minor, initial, ufunc is np.maximum
+        )
         not_dense = counts < self.n_major
         out[not_dense] = ufunc(out[not_dense], 0)
         return out

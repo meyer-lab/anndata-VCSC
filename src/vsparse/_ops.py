@@ -5,21 +5,34 @@ from __future__ import annotations
 import numba
 import numpy as np
 
-__all__ = ["major_matmat", "major_matvec", "minor_matmat", "minor_matvec", "minor_sums"]
+__all__ = [
+    "major_matmat",
+    "major_matvec",
+    "minor_counts",
+    "minor_extrema",
+    "minor_matmat",
+    "minor_matvec",
+    "minor_sums",
+]
 
-# Thread-local accumulators for the minor-axis scatter below cost
-# ``nthreads * n_minor * 8`` bytes. That's the whole reason this kernel can
-# replace an nnz-sized temporary, so it has to stay bounded rather than
-# scale with the thread count on a wide minor axis: the thread count is
-# capped to keep the accumulator block under this budget.
+# Thread-local accumulators for the minor-axis scatters below cost
+# ``nthreads * n_minor * bytes_per_element``. That's the whole reason these
+# kernels can replace an nnz-sized temporary, so the block has to stay
+# bounded rather than scale with the thread count on a wide minor axis: the
+# thread count is capped to keep it under this budget.
 _ACCUMULATOR_BUDGET_BYTES = 64 << 20  # 64 MiB
 
 
-def _accumulator_threads(n_minor: int) -> int:
-    """Threads to run the minor-axis scatter with, capped by accumulator size."""
+def _accumulator_threads(n_minor: int, bytes_per_element: int = 8) -> int:
+    """Threads to run a minor-axis scatter with, capped by accumulator size.
+
+    ``bytes_per_element`` is the per-slot cost of one thread's accumulator
+    row: 8 for a float64 sum, more for a kernel keeping several accumulators
+    (an extremum plus a count, say), so the budget holds either way.
+    """
     if n_minor <= 0:
         return 1
-    affordable = max(1, _ACCUMULATOR_BUDGET_BYTES // (n_minor * 8))
+    affordable = max(1, _ACCUMULATOR_BUDGET_BYTES // (n_minor * max(1, bytes_per_element)))
     return int(min(numba.get_num_threads(), affordable))
 
 
@@ -121,6 +134,80 @@ def _minor_sums(values, value_ptr, indices, n_minor, nthreads):
 def minor_sums(values, value_ptr, indices, n_minor):
     """Per-minor-index totals as float64, without an nnz-sized temporary."""
     return _minor_sums(values, value_ptr, indices, n_minor, _accumulator_threads(n_minor))
+
+
+# -- minor-axis extrema and counts -------------------------------------------
+#
+# Same shape of problem as the sum above, and the same fix. A per-minor-index
+# max/min over the stored values is a scatter, and reaching for ufunc.at over
+# an expanded per-nonzero array pays an nnz-sized temporary for it; a count
+# per minor index is a scatter too, and np.bincount silently pays one as well
+# by promoting an int32 ``indices`` to intp before counting.
+#
+# The extremum and the count are computed in one pass because max/min over a
+# sparse axis needs both: the extremum of the *stored* values, and whether
+# the axis had any implicit zero to compare against. Callers apply that
+# correction themselves (see _VCSBase._minor_reduce), so the semantics stay
+# in one place rather than being duplicated in a kernel.
+
+
+@numba.njit(cache=True, parallel=True)
+def _minor_extrema(values, value_ptr, indices, n_minor, nthreads, initial, is_max):
+    n_groups = values.shape[0]
+    chunk = (n_groups + nthreads - 1) // nthreads
+    part_val = np.full((nthreads, n_minor), initial, dtype=values.dtype)
+    part_cnt = np.zeros((nthreads, n_minor), dtype=np.int64)
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
+        start = t * chunk
+        end = min(n_groups, start + chunk)
+        local_val = part_val[t]
+        local_cnt = part_cnt[t]
+        for u in range(start, end):
+            v = values[u]
+            for k in range(value_ptr[u], value_ptr[u + 1]):
+                idx = indices[k]
+                local_cnt[idx] += 1
+                if is_max:
+                    if v > local_val[idx]:
+                        local_val[idx] = v
+                else:
+                    if v < local_val[idx]:
+                        local_val[idx] = v
+    return part_val, part_cnt
+
+
+def minor_extrema(values, value_ptr, indices, n_minor, initial, is_max):
+    """``(extremum over stored values, count)`` per minor index.
+
+    The extremum ignores implicit zeros -- the count is what lets the caller
+    decide where one belongs.
+    """
+    nthreads = _accumulator_threads(n_minor, values.dtype.itemsize + 8)
+    part_val, part_cnt = _minor_extrema(
+        values, value_ptr, indices, n_minor, nthreads, initial, is_max
+    )
+    extrema = part_val.max(axis=0) if is_max else part_val.min(axis=0)
+    return extrema, part_cnt.sum(axis=0)
+
+
+@numba.njit(cache=True, parallel=True)
+def _minor_counts(value_ptr, indices, n_minor, nthreads):
+    n_groups = value_ptr.shape[0] - 1
+    chunk = (n_groups + nthreads - 1) // nthreads
+    partial = np.zeros((nthreads, n_minor), dtype=np.int64)
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
+        start = t * chunk
+        end = min(n_groups, start + chunk)
+        local = partial[t]
+        for u in range(start, end):
+            for k in range(value_ptr[u], value_ptr[u + 1]):
+                local[indices[k]] += 1
+    return partial.sum(axis=0)
+
+
+def minor_counts(value_ptr, indices, n_minor):
+    """Stored-element count per minor index, without an nnz-sized temporary."""
+    return _minor_counts(value_ptr, indices, n_minor, _accumulator_threads(n_minor))
 
 
 def major_matvec(major_ptr, values, value_ptr, indices, x, n_major, n_minor):
