@@ -1,0 +1,29 @@
+{
+  "comment": "Ceilings a metric must stay under, regenerated with `python -m benchmarks.run --set fast --record`. Only metrics listed in `margins` are gated; the rest are recorded by cases for context. Margins are the slack applied to a measured value when recording: tight for deterministic layout/memory numbers, loose for timing ratios, which vary with the runner.",
+  "margins": {
+    "bytes_per_nonzero": 1.1,
+    "indices_bytes_per_nonzero": 1.1,
+    "vs_scipy_ratio": 1.1,
+    "peak_alloc_mb": 2.0,
+    "time_ratio_vs_scipy": 4.0
+  },
+  "cases": {
+    "layout_bytes_per_nonzero": {
+      "bytes_per_nonzero": 5.72,
+      "indices_bytes_per_nonzero": 4.4,
+      "vs_scipy_ratio": 0.4751
+    },
+    "minor_sum_peak_mb": {
+      "peak_alloc_mb": 132.5131
+    },
+    "misaligned_matmul_peak_mb": {
+      "peak_alloc_mb": 407.2383
+    },
+    "matvec_vs_scipy": {
+      "time_ratio_vs_scipy": 1.8283
+    },
+    "matmat_vs_scipy": {
+      "time_ratio_vs_scipy": 1.4318
+    }
+  }
+}
