@@ -148,6 +148,19 @@ class _VCSBase:
     def toarray(self) -> np.ndarray:
         return self.to_scipy().toarray()
 
+    def astype(self, dtype: Any, copy: bool = True) -> _VCSBase:
+        """Cast the stored values to ``dtype``. Structural zeros stay zero implicitly."""
+        dtype = np.dtype(dtype)
+        if not copy and dtype == self.dtype:
+            return self
+        return type(self)(
+            self.shape,
+            self.major_ptr.copy(),
+            self.values.astype(dtype),
+            self.value_ptr.copy(),
+            self.indices.copy(),
+        )
+
     # -- structural ops ----------------------------------------------------
 
     @property
@@ -229,6 +242,145 @@ class _VCSBase:
         major_axis = 0 if self._format == "csc" else 1
         return self._major_sums() if axis == major_axis else self._minor_sums()
 
+    def _major_nnz(self) -> np.ndarray:
+        """Per-major-slice stored-element counts -- doesn't touch ``indices``."""
+        return (self.value_ptr[self.major_ptr[1:]] - self.value_ptr[self.major_ptr[:-1]]).astype(
+            np.int64
+        )
+
+    def _minor_nnz(self) -> np.ndarray:
+        """Per-minor-index stored-element counts -- a scatter-add over every nonzero."""
+        return np.bincount(self.indices, minlength=self.n_minor).astype(np.int64)
+
+    def getnnz(self, axis: int | None = None) -> np.ndarray | int:
+        """Count of stored elements along ``axis``, or overall if ``None``."""
+        if axis is None:
+            return self.nnz
+        if axis not in (0, 1):
+            raise ValueError(f"axis must be None, 0, or 1, got {axis!r}")
+        major_axis = 0 if self._format == "csc" else 1
+        return self._major_nnz() if axis == major_axis else self._minor_nnz()
+
+    def count_nonzero(self) -> int:
+        """Count of stored elements that are actually nonzero (unlike :attr:`nnz`/``getnnz``)."""
+        group_sizes = np.diff(self.value_ptr)
+        return int(np.sum(group_sizes[self.values != 0]))
+
+    def mean(self, axis: int | None = None) -> np.ndarray | float:
+        """Mean of (structural + implicit-zero) values along ``axis``, or overall if ``None``."""
+        if axis is None:
+            total = self.shape[0] * self.shape[1]
+            return self.sum() / total if total else float("nan")
+        if axis not in (0, 1):
+            raise ValueError(f"axis must be None, 0, or 1, got {axis!r}")
+        denom = self.shape[0] if axis == 0 else self.shape[1]
+        return self.sum(axis=axis) / denom if denom else np.full(0, float("nan"))
+
+    def _reduce_initial(self, kind: str) -> Any:
+        """Identity element for a max/min reduction over ``self.values.dtype``."""
+        dt = self.values.dtype
+        if np.issubdtype(dt, np.integer):
+            return np.iinfo(dt).min if kind == "max" else np.iinfo(dt).max
+        return -np.inf if kind == "max" else np.inf
+
+    def _major_reduce(self, ufunc: np.ufunc, initial: Any) -> np.ndarray:
+        """Per-major-slice max/min, accounting for implicit zeros in sparse slices."""
+        out = np.full(self.n_major, initial, dtype=self.values.dtype)
+        group_of_major = np.repeat(np.arange(self.n_major, dtype=np.int64), np.diff(self.major_ptr))
+        ufunc.at(out, group_of_major, self.values)
+        nnz_per_major = self.value_ptr[self.major_ptr[1:]] - self.value_ptr[self.major_ptr[:-1]]
+        not_dense = nnz_per_major < self.n_minor
+        out[not_dense] = ufunc(out[not_dense], 0)
+        return out
+
+    def _minor_reduce(self, ufunc: np.ufunc, initial: Any) -> np.ndarray:
+        """Per-minor-index max/min, accounting for implicit zeros in sparse slices."""
+        group_sizes = np.diff(self.value_ptr)
+        expanded = np.repeat(self.values, group_sizes)
+        out = np.full(self.n_minor, initial, dtype=self.values.dtype)
+        ufunc.at(out, self.indices, expanded)
+        counts = np.bincount(self.indices, minlength=self.n_minor)
+        not_dense = counts < self.n_major
+        out[not_dense] = ufunc(out[not_dense], 0)
+        return out
+
+    def _reduce(self, ufunc: np.ufunc, kind: str, axis: int | None) -> np.ndarray | Any:
+        initial = self._reduce_initial(kind)
+        if axis is None:
+            m = ufunc.reduce(self.values, initial=initial) if self.values.size else initial
+            if self.nnz < self.shape[0] * self.shape[1]:
+                m = ufunc(m, 0)
+            return m.item() if hasattr(m, "item") else m
+        if axis not in (0, 1):
+            raise ValueError(f"axis must be None, 0, or 1, got {axis!r}")
+        major_axis = 0 if self._format == "csc" else 1
+        return (
+            self._major_reduce(ufunc, initial)
+            if axis == major_axis
+            else self._minor_reduce(ufunc, initial)
+        )
+
+    def max(self, axis: int | None = None) -> np.ndarray | Any:
+        """Maximum value (including implicit zeros) along ``axis``, or overall if ``None``."""
+        return self._reduce(np.maximum, "max", axis)
+
+    def min(self, axis: int | None = None) -> np.ndarray | Any:
+        """Minimum value (including implicit zeros) along ``axis``, or overall if ``None``."""
+        return self._reduce(np.minimum, "min", axis)
+
+    # -- elementwise arithmetic ----------------------------------------------
+
+    def _elementwise(self, other: Any, op_name: str) -> _VCSBase | np.ndarray:
+        """Fall back to scipy to compute an elementwise binary op, re-wrapping a sparse result."""
+        other_arg = other.to_scipy() if isinstance(other, _VCSBase) else other
+        self_scipy = self.to_scipy()
+        if op_name == "multiply":
+            result = self_scipy.multiply(other_arg)
+        else:
+            result = getattr(self_scipy, op_name)(other_arg)
+        if result is NotImplemented:
+            return NotImplemented
+        if sp.issparse(result):
+            return type(self).from_scipy(result)
+        return np.asarray(result)
+
+    def __add__(self, other):
+        if np.isscalar(other):
+            if other == 0:
+                return self.copy()
+            raise NotImplementedError(
+                "adding a nonzero scalar to a sparse array is not supported"
+            )
+        return self._elementwise(other, "__add__")
+
+    __radd__ = __add__
+
+    def __sub__(self, other):
+        if np.isscalar(other):
+            if other == 0:
+                return self.copy()
+            raise NotImplementedError(
+                "subtracting a nonzero scalar from a sparse array is not supported"
+            )
+        return self._elementwise(other, "__sub__")
+
+    def __rsub__(self, other):
+        if np.isscalar(other):
+            if other == 0:
+                return -self
+            raise NotImplementedError(
+                "subtracting a sparse array from a nonzero scalar is not supported"
+            )
+        other_arg = other.to_scipy() if isinstance(other, _VCSBase) else other
+        result = other_arg - self.to_scipy()
+        if sp.issparse(result):
+            return type(self).from_scipy(result)
+        return np.asarray(result)
+
+    def multiply(self, other) -> _VCSBase | np.ndarray:
+        """Elementwise multiplication (matches scipy's sparse-array ``.multiply``)."""
+        return self * other
+
     # -- scalar arithmetic --------------------------------------------------
 
     def _empty_like(self) -> _VCSBase:
@@ -242,30 +394,30 @@ class _VCSBase:
         )
 
     def __mul__(self, other):
-        if not np.isscalar(other):
-            return NotImplemented
-        if other == 0:
-            return self._empty_like()
-        return type(self)(
-            self.shape,
-            self.major_ptr.copy(),
-            self.values * other,
-            self.value_ptr.copy(),
-            self.indices.copy(),
-        )
+        if np.isscalar(other):
+            if other == 0:
+                return self._empty_like()
+            return type(self)(
+                self.shape,
+                self.major_ptr.copy(),
+                self.values * other,
+                self.value_ptr.copy(),
+                self.indices.copy(),
+            )
+        return self._elementwise(other, "multiply")
 
     __rmul__ = __mul__
 
     def __truediv__(self, other):
-        if not np.isscalar(other):
-            return NotImplemented
-        return type(self)(
-            self.shape,
-            self.major_ptr.copy(),
-            self.values / other,
-            self.value_ptr.copy(),
-            self.indices.copy(),
-        )
+        if np.isscalar(other):
+            return type(self)(
+                self.shape,
+                self.major_ptr.copy(),
+                self.values / other,
+                self.value_ptr.copy(),
+                self.indices.copy(),
+            )
+        return self._elementwise(other, "__truediv__")
 
     def __neg__(self):
         return self * -1
@@ -364,6 +516,42 @@ class _VCSBase:
         )
         return type(self)(new_shape, new_major_ptr, new_values, new_value_ptr, new_indices)
 
+    def _select_minor(self, key: Any) -> _VCSBase:
+        """Select along the minor axis (rows for VCSC, columns for VCSR).
+
+        Unlike :meth:`_select_major`, the kept elements aren't already
+        contiguous per major slice, so this filters/remaps ``indices`` and
+        drops any (major, unique-value) slot that no longer has any kept
+        index, shrinking ``major_ptr``/``value_ptr`` accordingly.
+        """
+        idx = _normalize_major_idx(key, self.n_minor)
+        n_minor_new = idx.shape[0]
+
+        remap = np.full(self.n_minor, -1, dtype=np.int64)
+        remap[idx] = np.arange(n_minor_new, dtype=np.int64)
+
+        keep = remap[self.indices] >= 0
+        new_indices = remap[self.indices[keep]].astype(self.indices.dtype, copy=False)
+
+        n_unique = self.values.shape[0]
+        value_slot_of_index = np.repeat(np.arange(n_unique, dtype=np.int64), np.diff(self.value_ptr))
+        kept_per_slot = np.bincount(value_slot_of_index[keep], minlength=n_unique)
+        surviving = kept_per_slot > 0
+
+        new_values = self.values[surviving]
+        new_value_ptr = np.zeros(int(surviving.sum()) + 1, dtype=np.int64)
+        np.cumsum(kept_per_slot[surviving], out=new_value_ptr[1:])
+
+        group_of_major = np.repeat(np.arange(self.n_major, dtype=np.int64), np.diff(self.major_ptr))
+        major_counts = np.bincount(group_of_major[surviving], minlength=self.n_major)
+        new_major_ptr = np.zeros(self.n_major + 1, dtype=np.int64)
+        np.cumsum(major_counts, out=new_major_ptr[1:])
+
+        new_shape = (
+            (n_minor_new, self.n_major) if self._format == "csc" else (self.n_major, n_minor_new)
+        )
+        return type(self)(new_shape, new_major_ptr, new_values, new_value_ptr, new_indices)
+
     def __getitem__(self, key):
         if isinstance(key, tuple):
             if len(key) != 2:
@@ -372,13 +560,23 @@ class _VCSBase:
         else:
             row_key, col_key = key, slice(None)
 
+        # A bare int on *both* axes must collapse to a scalar, which a 2-D
+        # VCSC/VCSR array can't represent -- only that case needs to convert.
+        if isinstance(row_key, int | np.integer) and isinstance(col_key, int | np.integer):
+            return self.to_scipy()[row_key, col_key]
+
         major_key, minor_key = (
             (col_key, row_key) if self._format == "csc" else (row_key, col_key)
         )
-        if _is_full_slice(minor_key) and not _is_full_slice(major_key):
-            return self._select_major(major_key)
+        if _is_full_slice(major_key) and _is_full_slice(minor_key):
+            return self.copy()
 
-        return self.to_scipy()[row_key, col_key]
+        result = self
+        if not _is_full_slice(major_key):
+            result = result._select_major(major_key)
+        if not _is_full_slice(minor_key):
+            result = result._select_minor(minor_key)
+        return result
 
 
 class VCSCArray(_VCSBase):

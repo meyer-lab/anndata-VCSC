@@ -51,11 +51,13 @@ def test_major_axis_boolean(dense, vcls):
     np.testing.assert_allclose(sub.to_scipy().toarray(), expected)
 
 
-def test_general_2d_indexing_falls_back(dense, vcls):
+def test_general_2d_indexing(dense, vcls):
+    """Slicing both axes at once now stays VCS-native (see test_general_indexing_nnz_astype.py)."""
     v = vcls.from_scipy(sp.csr_array(dense))
     if dense.shape[0] < 2 or dense.shape[1] < 2:
         pytest.skip("shape too small")
     result = v[0:2, 0:2]
+    assert isinstance(result, vcls)
     np.testing.assert_allclose(_as_dense(result), dense[0:2, 0:2])
 
 
