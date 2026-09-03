@@ -48,9 +48,10 @@ def _subset_2d(v: Any, oidx: Any, vidx: Any) -> Any:
         return None
     if isinstance(v, _VCS_TYPES):
         result = v[oidx, vidx]
-        # VCSCArray/VCSRArray fall back to a plain scipy array for general
-        # (both-axes) indexing (see _VCSBase.__getitem__); re-wrap so X/raw_X
-        # stay VCS-backed the way the rest of this class requires.
+        # VCSCArray/VCSRArray.__getitem__ only converts to a plain scipy
+        # array when both axes collapse to a scalar (oidx/vidx are always
+        # slices/arrays here, never bare ints -- see _as_slice_index above),
+        # but re-wrap defensively so X/raw_X always stay VCS-backed.
         if not isinstance(result, _VCS_TYPES):
             result = type(v).from_scipy(result)
         return result
