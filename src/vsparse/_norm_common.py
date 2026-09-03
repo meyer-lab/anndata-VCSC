@@ -9,6 +9,15 @@ value, so a real materialization is an ``n_rows * n_cols`` dense array; the
 whole point of a "view" here is to avoid paying for that until (and unless)
 the caller actually asks for it.
 
+Every statistic below is computed once, at construction, over the whole
+wrapped array -- so a view is tied to the population it was built from.
+Indexing one (:meth:`~NormalizedViewBase.__getitem__`) is a window into
+*that* matrix and keeps those statistics; normalizing a subset on its own
+terms is :meth:`~NormalizedViewBase.select`, or equivalently selecting on
+the raw array before calling ``normalized()``. The distinction is not
+cosmetic: for a selection whose read depth or expression profile differs
+from the parent, the two differ by tens of percent.
+
 What's precomputed, once, at construction:
 
 - ``row_scale``: per-row (cell) total raw counts, scaled to a median of 1 --
@@ -51,6 +60,8 @@ from typing import Any
 
 import numba
 import numpy as np
+
+from vsparse._indexutils import is_full_slice as _is_full_slice
 
 __all__ = ["NormalizedViewBase"]
 
@@ -179,6 +190,11 @@ class NormalizedViewBase:
 
     Subclasses fix ``_format`` (``"csc"``/``"csr"``) and supply
     ``__matmul__``/``__rmatmul__`` wired to :mod:`vsparse._vcs_matmul`.
+
+    Statistics are computed at construction over the whole array passed in,
+    which fixes what this view means: the normalization of *that*
+    population. :meth:`__getitem__` windows into it; :meth:`select`
+    renormalizes a subset on its own terms.
     """
 
     _format: str
@@ -252,16 +268,62 @@ class NormalizedViewBase:
             )
         return out
 
+    # -- selection ---------------------------------------------------------------
+
+    def select(self, rows: Any = slice(None), cols: Any = slice(None)) -> Any:
+        """A normalized view of the selected sub-array, with statistics recomputed for it.
+
+        This is *not* what indexing the view does. ``view[rows]`` is a
+        window into this view's matrix and keeps this view's statistics
+        (see :meth:`__getitem__`); ``view.select(rows)`` throws those away
+        and normalizes the selected cells on their own terms, exactly as
+        ``arr[rows].normalized()`` would. For a selection whose read depth
+        or expression profile differs from the parent -- picking one cell
+        type out of a mixed population, say -- the two differ by tens of
+        percent, and it's ``select`` that matches normalizing the selected
+        cells directly.
+
+        Note what recomputation means for a *column* selection: ``row_scale``
+        is a per-cell total over whatever columns are present, so selecting
+        genes here re-derives read depth from just those genes. If that
+        isn't what you want (it usually isn't -- depth is normally measured
+        across all genes), select the genes first and normalize after, or
+        select only rows here.
+
+        Returns a view, not a dense array, so it still composes with
+        ``@``/:meth:`toarray`.
+        """
+        # One axis at a time, so two index arrays select a sub-block rather
+        # than being broadcast against each other pointwise the way a single
+        # ``arr[rows, cols]`` would.
+        sub: Any = self._arr
+        if not _is_full_slice(rows):
+            sub = sub[_prep_key(rows), :]
+        if not _is_full_slice(cols):
+            sub = sub[:, _prep_key(cols)]
+        if not isinstance(sub, type(self._arr)):
+            # Selecting the minor axis drops out of the raw array as scipy.
+            sub = type(self._arr).from_scipy(sub)
+        return type(self)(sub)
+
     # -- on-the-fly elementwise access ------------------------------------------
 
     def __getitem__(self, key: Any) -> np.ndarray:
-        """Compute just the requested sub-block, on the fly, from the raw data.
+        """A window into *this* view's matrix, computed on the fly from the raw data.
 
         Only the raw counts for the requested rows/columns are ever
-        decompressed (via the underlying array's own indexing, which stays
-        compact for a major-axis-only slice); the transform/centering
-        formula is then applied to that small block directly, using the
-        precomputed per-row/per-column statistics -- never the full matrix.
+        decompressed; the transform/centering formula is then applied to
+        that small block directly -- never the full matrix.
+
+        The statistics it applies are this view's own, computed over the
+        **whole** wrapped array at construction. That makes this exactly
+        ``toarray()[key]``, without materializing the full matrix -- and it
+        makes it emphatically *not* the same as normalizing the selected
+        sub-matrix, which would derive read depth, per-gene scale and
+        centering from the selection alone. On a selection that differs
+        from the parent population the two disagree by tens of percent.
+        Use :meth:`select` (or select on the raw array and normalize after)
+        when you want post-selection statistics.
         """
         if isinstance(key, tuple):
             if len(key) != 2:
