@@ -9,11 +9,18 @@ from vsparse import VCSCAnnData, VCSRArray
 from vsparse._rapid_load import load_and_normalize, load_packed
 
 
-def _reference_prepare(dense: np.ndarray, min_cell_counts: float, gene_threshold: float):
+def _reference_prepare(
+    dense: np.ndarray,
+    min_cell_counts: float,
+    gene_threshold: float,
+    min_cells: int | None = None,
+):
     """Direct translation of parafac2.normalize.prepare_dataset's math, on a plain array."""
     X = sp.csr_array(dense)
     cell_mask = np.ravel(X.sum(axis=1)) > min_cell_counts
     gene_mask = np.ravel(X.sum(axis=0)) > (gene_threshold * X.shape[0])
+    if min_cells is not None:
+        gene_mask &= np.ravel((X > 0).sum(axis=0)) >= min_cells
     Xf = sp.csr_array(X[cell_mask][:, gene_mask])
     Xf.data = Xf.data.astype(np.float32)
 
@@ -69,6 +76,90 @@ def test_no_filtering_keeps_everything(tmp_path, rng):
     assert result.shape == dense.shape
     assert result.n_obs == dense.shape[0]
     assert result.n_vars == dense.shape[1]
+
+
+def test_min_cells_filters_genes_by_detection_count(tmp_path):
+    dense = np.array(
+        [
+            [5, 1, 1, 1],
+            [0, 1, 1, 1],
+            [0, 0, 1, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+        ],
+        dtype=np.float64,
+    )
+    path = _write_ivcsr(tmp_path, dense)
+
+    result = load_and_normalize(
+        path,
+        min_cell_counts=-1.0,
+        gene_threshold=0.0,
+        min_cells=3,
+    )
+    ref_X, _, ref_genes = _reference_prepare(dense, -1.0, 0.0, min_cells=3)
+
+    assert list(result.var_names) == [str(i) for i in ref_genes]
+    assert list(result.var_names) == ["2", "3"]
+    assert isinstance(result.X, sp.csr_array)
+    np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
+
+
+def test_min_cells_uses_obs_filtered_cohort(tmp_path):
+    import pandas as pd
+
+    dense = np.array(
+        [
+            [1, 1, 1],
+            [1, 0, 1],
+            [0, 1, 1],
+            [1, 0, 1],
+            [0, 0, 1],
+            [1, 0, 1],
+        ],
+        dtype=np.float64,
+    )
+    obs = pd.DataFrame(
+        {"condition": ["control", "treated"] * 3},
+        index=[f"cell_{i}" for i in range(dense.shape[0])],
+    )
+    adata = ad.AnnData(X=sp.csr_array(dense), obs=obs)
+    path = tmp_path / "min_cells_obs_filter.ivcsr.h5ad"
+    VCSCAnnData.from_anndata(adata, format="csr").write_h5ad(path, format="ivcsc")
+
+    obs_mask = np.asarray(obs["condition"] == "control")
+    result = load_and_normalize(
+        path,
+        min_cell_counts=-1.0,
+        gene_threshold=0.0,
+        min_cells=2,
+        obs_filter=lambda obs: obs["condition"] == "control",
+    )
+    ref_X, _, ref_genes = _reference_prepare(
+        dense[obs_mask], -1.0, 0.0, min_cells=2
+    )
+
+    assert list(result.var_names) == [str(i) for i in ref_genes]
+    assert list(result.var_names) == ["1", "2"]
+    assert isinstance(result.X, sp.csr_array)
+    np.testing.assert_allclose(result.X.toarray(), ref_X.toarray(), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("min_cells", "error", "match"),
+    [
+        (-1, ValueError, "non-negative"),
+        (1.5, TypeError, "integer or None"),
+        (True, TypeError, "integer or None"),
+    ],
+)
+def test_min_cells_validation(tmp_path, rng, min_cells, error, match):
+    dense = rng.integers(0, 5, size=(10, 4)).astype(np.float64)
+    path = _write_ivcsr(tmp_path, dense)
+
+    with pytest.raises(error, match=match):
+        load_and_normalize(path, min_cells=min_cells)
 
 
 def test_obs_filter_matches_subset_reference(tmp_path):
