@@ -100,6 +100,59 @@ def misaligned_matmul_peak_mb() -> dict[str, float]:
     }
 
 
+@fast
+def minor_extrema_peak_mb() -> dict[str, float]:
+    """Memory allocated by a minor-axis max/min.
+
+    Added because #22's `max`/`min` shipped with the same expand-then-scatter
+    temporary the reduction case above exists to catch, which is the clearest
+    evidence available that this gate is worth having: the pattern reappears
+    in new code unless something measures it.
+    """
+    from vsparse import VCSRArray
+
+    v = VCSRArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
+    return {
+        "peak_alloc_mb": peak_alloc_mb(lambda: v.max(axis=0)),
+        "expanded_nnz_mb": v.nnz * 8 / 1e6,
+    }
+
+
+@fast
+def minor_getnnz_peak_mb() -> dict[str, float]:
+    """Memory allocated by a per-minor-index stored-element count.
+
+    np.bincount is the obvious implementation and promotes an int32
+    ``indices`` to intp first, so this is nnz-sized for an n_minor-sized
+    answer -- invisible in a correctness test.
+    """
+    from vsparse import VCSRArray
+
+    v = VCSRArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
+    return {
+        "peak_alloc_mb": peak_alloc_mb(lambda: v.getnnz(axis=0)),
+        "indices_nnz_mb": v.nnz * 8 / 1e6,
+    }
+
+
+@fast
+def minor_selection_peak_mb() -> dict[str, float]:
+    """Memory allocated by a minor-axis selection (#23's `_select_minor`).
+
+    Currently carries an nnz-sized temporary of its own (ISSUE-30); recorded
+    so the number is tracked rather than assumed, and so the ceiling drops
+    visibly when that is fixed.
+    """
+    from vsparse import VCSRArray
+
+    v = VCSRArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
+    cols = np.arange(0, v.shape[1], 2)
+    return {
+        "peak_alloc_mb": peak_alloc_mb(lambda: v[:, cols]),
+        "indices_nnz_mb": v.nnz * 8 / 1e6,
+    }
+
+
 # -- throughput, relative to scipy -------------------------------------------
 
 
