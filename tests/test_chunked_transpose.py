@@ -203,3 +203,22 @@ def test_misaligned_matmul_peak_is_bounded_by_the_chunk_budget(monkeypatch, rng)
     assert nv._dual_arr is None
     assert peak - before < nnz_bytes
     np.testing.assert_allclose(out, _reference(dense) @ B, atol=1e-7)
+
+
+def test_major_range_agrees_with_native_slicing(vcls, rng):
+    """#23 gave __getitem__ a native path for slices; _major_range must match it.
+
+    Both now exist for the same job on a contiguous range -- __getitem__ for
+    callers, _major_range as the chunking primitive (it returns views rather
+    than gathering). If they ever disagree, the chunked matmul is computing
+    against a different sub-array than a caller would get.
+    """
+    dense = rng.integers(0, 4, size=(30, 20)).astype(np.float64)
+    v = vcls.from_scipy(_scipy_for(vcls, dense))
+    start, stop = 2, 7
+
+    chunk = v._major_range(start, stop)
+    native = v[:, start:stop] if vcls is VCSCArray else v[start:stop, :]
+
+    assert isinstance(native, vcls)
+    np.testing.assert_allclose(chunk.toarray(), native.toarray())
