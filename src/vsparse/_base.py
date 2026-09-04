@@ -515,25 +515,14 @@ class _VCSBase:
     def _select_minor(self, key: Any) -> _VCSBase:
         """Select along the minor axis (rows for VCSC, columns for VCSR).
 
-        Unlike :meth:`_select_major`, the kept elements aren't already
-        contiguous per major slice, so ``indices`` has to be filtered and
-        remapped, and any (major, unique-value) slot left with no kept index
-        dropped -- shrinking ``major_ptr``/``value_ptr`` accordingly.
-
-        The selection is a *fan-out*, not a one-to-one remap: a key may name
-        the same minor index more than once (``arr[:, [1, 1, 3]]``, which
-        scipy supports), so one stored element can have to appear in several
-        output positions. It is inverted once into a CSR-shaped map over the
-        original minor axis and applied by
-        :func:`vsparse._ops.minor_select_counts`/
-        :func:`~vsparse._ops.minor_select_fill`, whose intermediates are
-        sized by the axis and the selection rather than by ``nnz``.
+        A key may name the same index more than once, so this is a fan-out
+        rather than a remap and one stored element can appear in several
+        output positions.
         """
         idx = _normalize_major_idx(key, self.n_minor)
         n_minor_new = idx.shape[0]
 
-        # Invert the selection: output positions grouped by the original index
-        # they came from, so a repeated index carries all of its destinations.
+        # Output positions grouped by the original index they came from.
         fanout = np.bincount(idx, minlength=self.n_minor)
         offsets = np.zeros(self.n_minor + 1, dtype=np.int64)
         np.cumsum(fanout, out=offsets[1:])
@@ -553,8 +542,8 @@ class _VCSBase:
             kept_slots, new_value_ptr, new_indices,
         )
 
-        # Slots stay in their original order, so each major slice keeps a
-        # contiguous run of them; count how many of its slots survived.
+        # Slots keep their original order, so each major slice owns a
+        # contiguous run of them.
         major_of_slot = np.searchsorted(self.major_ptr, kept_slots, side="right") - 1
         major_counts = np.bincount(major_of_slot, minlength=self.n_major)
         new_major_ptr = np.zeros(self.n_major + 1, dtype=np.int64)

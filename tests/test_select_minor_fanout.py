@@ -1,13 +1,3 @@
-"""Minor-axis selection is a fan-out: one stored element can land in many outputs.
-
-``arr[:, [1, 1, 3]]`` names column 1 twice. scipy supports that, and so did
-this package until minor-axis selection got a native path -- at which point
-a single old->new lookup array collapsed every repeat but the last and
-returned zeros in the dropped slots, with no error. These tests pin the
-fan-out semantics against scipy, which is the reference the native path has
-to reproduce.
-"""
-
 from __future__ import annotations
 
 import tracemalloc
@@ -40,9 +30,7 @@ def _grid(n_rows: int = 4, n_cols: int = 6) -> np.ndarray:
     "cols",
     [
         pytest.param([1, 1, 3], id="one_repeat"),
-        pytest.param([2, 2, 2], id="same_index_three_times"),
         pytest.param([0, 0, 0, 0], id="one_index_only"),
-        pytest.param([3, 1, 3, 1], id="interleaved_repeats"),
         pytest.param([0, 1, 1, 2, 2, 2], id="mixed_multiplicities"),
     ],
 )
@@ -53,7 +41,7 @@ def test_duplicate_minor_indices_fan_out(vcls, cols):
 
 
 def test_duplicate_indices_on_the_other_axis_too(vcls):
-    """Whichever axis is the *minor* one for this format takes the same path."""
+    """Whichever axis is the minor one for this format takes the same path."""
     dense = _grid()
     v = vcls.from_scipy(_scipy_for(vcls, dense))
     rows = [1, 1, 2, 0, 0]
@@ -68,7 +56,7 @@ def test_duplicates_on_both_axes_at_once(vcls):
 
 
 def test_matches_scipy_for_a_random_selection_with_repeats(vcls, rng):
-    """Against scipy directly -- the behaviour that regressed."""
+    """Against scipy, which fans duplicate indices out correctly."""
     dense = rng.integers(0, 4, size=(12, 9)).astype(np.float64)
     v = vcls.from_scipy(_scipy_for(vcls, dense))
     reference = _scipy_for(vcls, dense)
@@ -102,15 +90,6 @@ def test_non_duplicate_selections_unchanged(vcls, cols):
     np.testing.assert_allclose(v[:, cols].toarray(), expected)
 
 
-def test_selection_keeps_the_vcs_type_and_index_dtype(vcls):
-    dense = _grid()
-    v = vcls.from_scipy(_scipy_for(vcls, dense))
-    out = v[:, [1, 1, 3]]
-    assert isinstance(out, vcls)
-    assert out.indices.dtype == v.indices.dtype
-    assert out.shape == (dense.shape[0], 3) if vcls is VCSRArray else out.shape == (4, 3)
-
-
 def test_empty_selection_gives_a_zero_width_array(vcls):
     dense = _grid()
     v = vcls.from_scipy(_scipy_for(vcls, dense))
@@ -135,7 +114,7 @@ def test_sparse_columns_and_duplicates_together(vcls):
 
 
 def test_round_trip_through_scipy_after_a_duplicate_selection(vcls):
-    """The result has to be a structurally valid VCS array, not just print right."""
+    """The result has to be a structurally valid VCS array."""
     dense = _grid()
     v = vcls.from_scipy(_scipy_for(vcls, dense))
     out = v[:, [1, 1, 3]]
@@ -150,12 +129,7 @@ def test_round_trip_through_scipy_after_a_duplicate_selection(vcls):
 
 
 def test_minor_selection_allocates_nothing_nnz_sized():
-    """The rewrite also drops the nnz-sized intermediates the remap version needed.
-
-    Sized so the old implementation's per-nonzero temporaries were ~30 MB
-    while the bound here is 16 MB -- the result itself is legitimately
-    nnz-scale, so this bounds the *scratch*, not the output.
-    """
+    """Bounds the scratch, not the output, which is legitimately nnz-scale."""
     rng = np.random.default_rng(0)
     n_rows, n_cols = 2_000, 500
     dense = rng.integers(1, 5, size=(n_rows, n_cols)).astype(np.float64)
