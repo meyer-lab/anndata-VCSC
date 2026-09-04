@@ -261,12 +261,8 @@ def _filter_and_compact(
     gene_remap = (np.cumsum(gene_mask) - 1).astype(smallest_index_dtype(n_kept_genes))
     gene_remap[~gene_mask] = -1
 
-    # Two index arrays, two different bounds. ``new_indptr`` is indexed by
-    # nonzero count and genuinely needs int64 once nnz passes INT32_MAX;
-    # ``out_indices`` holds *gene* indices, bounded by ``n_kept_genes``, and
-    # is the nnz-sized one. Sizing both off nnz (as this used to) silently
-    # doubles the largest allocation in the function the moment a big enough
-    # dataset pushes the pointer array over the int32 line.
+    # ``new_indptr`` is indexed by nonzero count and needs int64 once nnz
+    # passes INT32_MAX; ``out_indices`` holds gene indices and never does.
     ptr_dtype = smallest_index_dtype(int(indices.shape[0]))
     col_dtype = smallest_index_dtype(n_kept_genes)
 

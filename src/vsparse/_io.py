@@ -97,12 +97,8 @@ def write_ivcs_elem(
     """
     g = f.require_group(k)
     g.attrs["shape"] = v.shape
-    # ``indices`` isn't stored directly here (it's delta+varint packed), so
-    # this attribute is purely the dtype a reader rebuilds it as. Record the
-    # narrowest dtype that can address the minor axis rather than whatever
-    # the in-memory array happens to carry: an array built by some other
-    # route can still be holding int64 indices for a small minor axis, and
-    # there's no reason to make every future read pay for that.
+    # Record the narrowest dtype that can address the minor axis rather than
+    # whatever the in-memory array happens to carry.
     in_memory = v.indices.dtype
     narrowest = smallest_index_dtype(v.n_minor)
     stored_dtype = narrowest if narrowest.itemsize < in_memory.itemsize else in_memory

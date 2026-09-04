@@ -68,13 +68,8 @@ class _VCSBase:
         if indices.shape[0] and (indices.min() < 0 or indices.max() >= n_minor):
             raise ValueError("indices out of bounds for the given shape")
 
-        # Narrow *after* the bounds check above, so an out-of-range index is
-        # rejected rather than silently truncated by the cast. ``indices`` is
-        # the only nnz-sized array in the layout, so storing it wider than
-        # ``n_minor`` requires is the largest avoidable cost here; this is a
-        # no-op (no copy) whenever it already has the right dtype, which is
-        # the normal case now that :func:`vsparse._construct.compress` picks
-        # the dtype up front.
+        # Narrow after the bounds check above, so an out-of-range index is
+        # rejected rather than silently truncated by the cast.
         idx_dtype = _smallest_index_dtype(n_minor)
         if idx_dtype.itemsize < indices.dtype.itemsize:
             indices = indices.astype(idx_dtype, copy=False)

@@ -117,13 +117,8 @@ def compress(
     Parameters mirror scipy's ``indptr``/``indices``/``data`` for either a
     CSC (major axis = columns) or CSR (major axis = rows) matrix.
 
-    ``n_minor`` (the length of the axis ``minor_indices`` points into) picks
-    the stored ``indices`` dtype: scipy hands out int64 indices for any array
-    with many nonzeros, but the values themselves only have to address
-    ``n_minor``, so a 33k-gene axis is stored as int32 no matter how large
-    the input's own index dtype was. This is an ``nnz``-sized array, so the
-    difference is the single largest term in an array's memory footprint.
-    Left at ``None``, the input's dtype is preserved (no narrowing).
+    ``n_minor`` picks the stored ``indices`` dtype; left at ``None`` the
+    input's dtype is preserved.
     """
     major_ptr = np.ascontiguousarray(major_ptr, dtype=np.int64)
     idx_dtype = None if n_minor is None else smallest_index_dtype(n_minor)
