@@ -220,14 +220,11 @@ class _VCSBase:
         return np.bincount(group_of_major, weights=weighted, minlength=self.n_major)
 
     def _minor_sums(self) -> np.ndarray:
-        """Per-minor-index totals -- a parallel scatter-add over every nonzero.
-
-        Runs against the value-compressed layout directly (see
-        :func:`vsparse._ops.minor_sums`); expanding to one value per nonzero
-        first would allocate an nnz-sized float64 array as scratch for a
-        reduction that never needs to keep it.
-        """
-        return _ops.minor_sums(self.values, self.value_ptr, self.indices, self.n_minor)
+        """A parallel scatter-add over every nonzero to get per-minor-index totals."""
+        return _ops.minor_sums(
+            self.values, self.value_ptr, self.indices, self.n_minor,
+            _ops.accumulator_threads(self.n_minor),
+        )
 
     def sum(self, axis: int | None = None) -> np.ndarray | float:
         """Sum of (structural) values along ``axis`` (0=rows, 1=columns), or overall if ``None``."""
@@ -249,13 +246,11 @@ class _VCSBase:
         )
 
     def _minor_nnz(self) -> np.ndarray:
-        """Per-minor-index stored-element counts -- a parallel scatter over every nonzero.
-
-        ``np.bincount`` would be the obvious call here, but it promotes an
-        int32 ``indices`` to ``intp`` first, which is an nnz-sized temporary
-        for a result of length ``n_minor`` (see :func:`vsparse._ops.minor_counts`).
-        """
-        return _ops.minor_counts(self.value_ptr, self.indices, self.n_minor)
+        """A parallel scatter over every nonzero to get per-minor-index counts."""
+        return _ops.minor_counts(
+            self.value_ptr, self.indices, self.n_minor,
+            _ops.accumulator_threads(self.n_minor),
+        )
 
     def getnnz(self, axis: int | None = None) -> np.ndarray | int:
         """Count of stored elements along ``axis``, or overall if ``None``."""
@@ -299,21 +294,12 @@ class _VCSBase:
         return out
 
     def _minor_reduce(self, ufunc: np.ufunc, initial: Any) -> np.ndarray:
-        """Per-minor-index max/min, accounting for implicit zeros in sparse slices.
-
-        The extremum over the stored values and the per-index count come from
-        one parallel pass over the value groups
-        (:func:`vsparse._ops.minor_extrema`); expanding to one value per
-        nonzero first, to drive ``ufunc.at``, would allocate an nnz-sized
-        array as scratch for an ``n_minor``-sized result.
-
-        The implicit-zero correction stays here rather than in the kernel: a
-        minor index that isn't stored in every major slice has at least one
-        structural zero, which competes in the reduction.
-        """
+        """Per-minor-index max/min, accounting for implicit zeros in sparse slices."""
         out, counts = _ops.minor_extrema(
             self.values, self.value_ptr, self.indices, self.n_minor, initial, ufunc is np.maximum
         )
+        # A minor index missing from some major slice has a structural zero
+        # competing in the reduction.
         not_dense = counts < self.n_major
         out[not_dense] = ufunc(out[not_dense], 0)
         return out
