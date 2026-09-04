@@ -17,7 +17,15 @@ matrices, e.g. single-cell RNA-seq counts.
 
 ## Install
 
-Install from source or via package manager:
+Install from PyPI:
+
+```sh
+pip install vsparse
+# or with uv
+uv add vsparse
+```
+
+From source:
 
 ```sh
 pip install git+https://github.com/meyer-lab/vsparse.git
