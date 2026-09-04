@@ -25,6 +25,7 @@ import zarr
 
 from vsparse import _ivcsc
 from vsparse._base import VCSCArray, VCSRArray, _VCSBase
+from vsparse._indexutils import smallest_index_dtype
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -96,7 +97,12 @@ def write_ivcs_elem(
     """
     g = f.require_group(k)
     g.attrs["shape"] = v.shape
-    g.attrs["indices_dtype"] = np.dtype(v.indices.dtype).name
+    # Record the narrowest dtype that can address the minor axis rather than
+    # whatever the in-memory array happens to carry.
+    in_memory = v.indices.dtype
+    narrowest = smallest_index_dtype(v.n_minor)
+    stored_dtype = narrowest if narrowest.itemsize < in_memory.itemsize else in_memory
+    g.attrs["indices_dtype"] = stored_dtype.name
     for name in ("major_ptr", "values", "value_ptr"):
         ad.io.write_elem(g, name, getattr(v, name), dataset_kwargs=dataset_kwargs)
     packed = _ivcsc.pack_indices(v.value_ptr, v.indices)

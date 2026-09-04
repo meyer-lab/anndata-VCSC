@@ -27,6 +27,8 @@ from __future__ import annotations
 import numba
 import numpy as np
 
+from vsparse._indexutils import smallest_index_dtype
+
 __all__ = ["compress", "decompress", "transpose_major"]
 
 
@@ -108,14 +110,21 @@ def compress(
     minor_indices: np.ndarray,
     data: np.ndarray,
     n_major: int,
+    n_minor: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build the VCS layout from a standard compressed-sparse layout.
 
     Parameters mirror scipy's ``indptr``/``indices``/``data`` for either a
     CSC (major axis = columns) or CSR (major axis = rows) matrix.
+
+    ``n_minor`` picks the stored ``indices`` dtype; left at ``None`` the
+    input's dtype is preserved.
     """
     major_ptr = np.ascontiguousarray(major_ptr, dtype=np.int64)
-    minor_indices = np.ascontiguousarray(minor_indices)
+    idx_dtype = None if n_minor is None else smallest_index_dtype(n_minor)
+    if idx_dtype is not None and idx_dtype.itemsize > minor_indices.dtype.itemsize:
+        idx_dtype = None  # never widen a caller's already-narrower indices
+    minor_indices = np.ascontiguousarray(minor_indices, dtype=idx_dtype)
     data = np.ascontiguousarray(data)
     return _compress(major_ptr, minor_indices, data, n_major)
 
@@ -188,7 +197,7 @@ def transpose_major(
     value_ptr_out = np.concatenate([group_starts, [nnz]]).astype(np.int64)
     major_ptr_out = np.searchsorted(sorted_major[group_starts], np.arange(n_minor + 1)).astype(np.int64)
 
-    minor_dtype = np.int32 if n_major <= np.iinfo(np.int32).max else np.int64
-    indices_out = sorted_minor.astype(minor_dtype, copy=False)
+    # The output's minor axis is the input's major axis, so that's the bound.
+    indices_out = sorted_minor.astype(smallest_index_dtype(n_major), copy=False)
 
     return major_ptr_out, values_out, value_ptr_out, indices_out
