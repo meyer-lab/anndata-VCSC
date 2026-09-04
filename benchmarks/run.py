@@ -4,11 +4,8 @@
     python -m benchmarks.run --set fast --record     # rewrite baselines.json
     python -m benchmarks.run --case matvec_vs_scipy  # one case
 
-Exits nonzero if any metric regresses past its recorded ceiling, so it can
-be wired straight into CI as a gate.
-
-Each case runs in its own subprocess. ``ru_maxrss`` only ever goes up within
-a process, so cases sharing one would report each other's peaks.
+Exits nonzero if any metric regresses past its recorded ceiling. Each case
+runs in its own subprocess.
 """
 
 from __future__ import annotations
@@ -36,7 +33,7 @@ def _run_one_in_subprocess(name: str) -> dict[str, float]:
 
 
 def _compare(results: dict[str, dict[str, float]], baselines: dict) -> list[str]:
-    """Metrics that exceeded their ceiling, as human-readable failure lines."""
+    """Metrics that exceeded their ceiling."""
     failures = []
     for case, metrics in results.items():
         limits = baselines.get("cases", {}).get(case, {})

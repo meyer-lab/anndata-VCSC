@@ -1,15 +1,3 @@
-"""The benchmark cases themselves.
-
-Each case is a function returning ``{metric_name: value}``. Cases marked
-``fast`` run on every pull request; the rest are for the scheduled job and
-for running by hand on real data.
-
-What's here is chosen to cover the claims that are easy to regress silently:
-the size of the stored layout, and whether an operation allocates a second
-copy of the data. A correctness test won't catch either -- the answers stay
-right while the cost quietly doubles.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -41,12 +29,7 @@ def slow(fn):
 
 @fast
 def layout_bytes_per_nonzero() -> dict[str, float]:
-    """Total bytes the VCS layout holds, per stored nonzero.
-
-    Deterministic, so this is an exact gate rather than a noisy one. It
-    moves if index dtypes widen, if deduplication stops working, or if a
-    new array joins the layout.
-    """
+    """Bytes the layout holds per stored nonzero, and the same for ``indices`` alone."""
     from vsparse import VCSRArray
 
     mat = integer_counts_csr(20_000, 2_000, density=0.05)
@@ -65,11 +48,7 @@ def layout_bytes_per_nonzero() -> dict[str, float]:
 
 @fast
 def minor_sum_peak_mb() -> dict[str, float]:
-    """Memory allocated by a minor-axis reduction.
-
-    A reduction produces an ``n_minor``-sized result; anything approaching
-    the size of the data means an nnz-sized temporary crept back in.
-    """
+    """Memory allocated by a minor-axis sum."""
     from vsparse import VCSRArray
 
     v = VCSRArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
@@ -82,11 +61,7 @@ def minor_sum_peak_mb() -> dict[str, float]:
 
 @fast
 def misaligned_matmul_peak_mb() -> dict[str, float]:
-    """Memory allocated by the matmul direction the storage isn't aligned for.
-
-    The failure mode is a full opposite-format copy of the array, so this
-    should stay far below the array's own footprint.
-    """
+    """Memory allocated by the matmul direction the storage isn't aligned for."""
     from vsparse import VCSCArray
 
     v = VCSCArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
@@ -102,13 +77,7 @@ def misaligned_matmul_peak_mb() -> dict[str, float]:
 
 @fast
 def minor_extrema_peak_mb() -> dict[str, float]:
-    """Memory allocated by a minor-axis max/min.
-
-    Added because #22's `max`/`min` shipped with the same expand-then-scatter
-    temporary the reduction case above exists to catch, which is the clearest
-    evidence available that this gate is worth having: the pattern reappears
-    in new code unless something measures it.
-    """
+    """Memory allocated by a minor-axis max/min."""
     from vsparse import VCSRArray
 
     v = VCSRArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
@@ -120,12 +89,7 @@ def minor_extrema_peak_mb() -> dict[str, float]:
 
 @fast
 def minor_getnnz_peak_mb() -> dict[str, float]:
-    """Memory allocated by a per-minor-index stored-element count.
-
-    np.bincount is the obvious implementation and promotes an int32
-    ``indices`` to intp first, so this is nnz-sized for an n_minor-sized
-    answer -- invisible in a correctness test.
-    """
+    """Memory allocated by a per-minor-index stored-element count."""
     from vsparse import VCSRArray
 
     v = VCSRArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
@@ -137,12 +101,7 @@ def minor_getnnz_peak_mb() -> dict[str, float]:
 
 @fast
 def minor_selection_peak_mb() -> dict[str, float]:
-    """Memory allocated by a minor-axis selection (#23's `_select_minor`).
-
-    Currently carries an nnz-sized temporary of its own (ISSUE-30); recorded
-    so the number is tracked rather than assumed, and so the ceiling drops
-    visibly when that is fixed.
-    """
+    """Memory allocated by a minor-axis selection."""
     from vsparse import VCSRArray
 
     v = VCSRArray.from_scipy(integer_counts_csr(40_000, 2_000, density=0.05))
@@ -185,7 +144,7 @@ def matmat_vs_scipy() -> dict[str, float]:
 
 @slow
 def large_layout_and_matmul() -> dict[str, float]:
-    """The same shape of measurement an order of magnitude up."""
+    """The same measurements an order of magnitude up."""
     from vsparse import VCSRArray
 
     mat = integer_counts_csr(200_000, 3_000, density=0.02)
