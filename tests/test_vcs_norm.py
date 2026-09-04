@@ -175,12 +175,7 @@ def test_all_zero_matrix_does_not_crash(vcls):
 
 
 def test_small_array_dual_is_cached_lazily(dense, vcls):
-    """An array whose whole regrouping fits one chunk is transposed once and kept.
-
-    Doing it per call would allocate the same amount anyway, so caching
-    costs no extra peak memory here. (Arrays too big for a single chunk
-    regroup per chunk and cache nothing -- see test_chunked_transpose.py.)
-    """
+    """An array whose whole regrouping fits one chunk is transposed once and kept."""
     if dense.sum() == 0:
         pytest.skip("all-zero matrix: median row total is 0")
     v = vcls.from_scipy(_scipy_for(vcls, dense))
@@ -200,31 +195,6 @@ def test_small_array_dual_is_cached_lazily(dense, vcls):
     nv @ B
     Bl @ nv
     assert nv._dual_arr is dual_after_matmul  # reused, not rebuilt
-
-
-def test_pin_dual_caches_and_agrees_with_the_chunked_path(dense, vcls):
-    """Pinning is opt-in, reused across calls, and numerically identical."""
-    if dense.sum() == 0:
-        pytest.skip("all-zero matrix: median row total is 0")
-    v = vcls.from_scipy(_scipy_for(vcls, dense))
-    rng = np.random.default_rng(12)
-    B = rng.normal(size=(dense.shape[1], 3))
-    Bl = rng.normal(size=(3, dense.shape[0]))
-
-    chunked = v.normalized()
-    unpinned_right, unpinned_left = chunked @ B, Bl @ chunked
-
-    pinned = v.normalized()
-    pinned.pin_dual()
-    dual = pinned._dual_arr
-    assert dual is not None
-    assert dual._format != v._format
-
-    np.testing.assert_allclose(pinned @ B, unpinned_right, atol=1e-12)
-    np.testing.assert_allclose(Bl @ pinned, unpinned_left, atol=1e-12)
-
-    pinned.pin_dual()  # idempotent: same object, not rebuilt
-    assert pinned._dual_arr is dual
 
 
 def test_transpose_major_roundtrip(dense, vcls):

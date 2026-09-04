@@ -515,12 +515,8 @@ class _VCSBase:
     def _major_range(self, start: int, stop: int) -> _VCSBase:
         """The contiguous major-slice range ``[start, stop)``, without copying values.
 
-        Unlike :meth:`_select_major` (arbitrary index arrays, so it has to
-        gather), a contiguous range is already contiguous in every stored
-        array: ``values``/``indices`` come back as plain views into this
-        array's buffers, and only the two small pointer arrays are rebuilt
-        (rebased to the new start). That makes it cheap enough to use as the
-        chunking primitive for a streaming pass over the major axis.
+        ``values``/``indices`` come back as views; only the two pointer
+        arrays are rebuilt, rebased to the new start.
         """
         u0, u1 = int(self.major_ptr[start]), int(self.major_ptr[stop])
         k0, k1 = int(self.value_ptr[u0]), int(self.value_ptr[u1])

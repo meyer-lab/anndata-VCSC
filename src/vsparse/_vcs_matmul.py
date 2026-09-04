@@ -19,19 +19,12 @@ on a given array (:class:`~vsparse.VCSCArray` for ``self @ B``,
 rather than run a scatter kernel there (thread-local output-shaped
 accumulators, reduced across threads: cache-unfriendly, and memory-hungry
 enough for wide ``B`` to need throttling), the storage is regrouped into the
-other VCS format via :meth:`~vsparse._base._VCSBase._transpose_major` (see
-:func:`vsparse._construct.transpose_major`) so the same major-aligned kernel
-can run against it.
-
-That regrouping is done **a chunk of major slices at a time** rather than
-over the whole array, so the extra memory is one chunk's worth rather than a
-second full copy of the dataset -- see the section below the kernels.
-:func:`pin_dual` opts into caching the full dual instead, for callers who
-will run many misaligned products against an array that fits comfortably.
+other VCS format via :meth:`~vsparse._base._VCSBase._transpose_major`, a
+chunk of major slices at a time so the extra memory is one chunk's worth
+rather than a second copy of the array.
 
 ``row_scale``/``gene_scale``/``col_mean`` are per-row/per-column statistics,
-so they carry over unchanged regardless of which physical layout is used to
-compute against (a chunk sees the slice of them its own axis covers).
+so a chunk just takes the slice of them its own axis covers.
 """
 
 from __future__ import annotations
@@ -100,32 +93,15 @@ def _vcsc_rmatmul_delta(major_ptr, values, value_ptr, indices, row_scale, gene_s
                     acc[c] += delta * brow[c]
 
 
-# -- misaligned direction: transpose a chunk at a time, not the whole array --
-#
-# Converting the whole array to its opposite format gives every call a
-# major-aligned kernel to run against, but it costs a second full copy of
-# the array -- unbounded, paid up front on the first call, and fatal at
-# atlas scale where the array already fills most of the machine.
-#
-# The regrouping doesn't have to happen all at once. ``Delta @ B`` splits
-# over the contracted axis (``Delta[:, C] @ B[C, :]``, summed over column
-# chunks) and ``B @ Delta`` splits the same way over row chunks, so a
-# contiguous range of major slices can be transposed on its own, fed to the
-# same major-aligned kernel, accumulated into the shared output, and thrown
-# away. Peak memory is then one chunk's worth of regrouping instead of the
-# whole array's, and it's the caller's chunk budget that sets it rather than
-# the dataset size.
-#
-# ``pin_dual`` stays available for callers who do want the cached full dual
-# -- many repeated misaligned products against an array that comfortably
-# fits -- but nothing reaches for it implicitly any more.
+# ``Delta @ B`` splits over the contracted axis and ``B @ Delta`` over rows,
+# so a contiguous range of major slices can be regrouped on its own,
+# accumulated into the shared output, and dropped.
 
 _CHUNK_BUDGET_BYTES = 128 << 20  # 128 MiB of transient regrouping per chunk
 
 # transpose_major sorts globally over the chunk's nonzeros, so its peak is
-# several nnz-sized temporaries (the values/major/minor entry arrays, the
-# lexsort permutation, the sorted copies) on top of the output. Deliberately
-# generous, since underestimating means the budget doesn't actually hold.
+# several nnz-sized temporaries. Deliberately generous, since underestimating
+# means the budget doesn't hold.
 _TRANSPOSE_BYTES_PER_NNZ = 64
 
 
@@ -152,20 +128,7 @@ def _chunk_bounds(arr, budget_bytes: int) -> list[tuple[int, int]]:
 
 
 def _aligned_source(nview: _VCSNormalizedBase, needed_format: str):
-    """``(array, None)`` to run one major-aligned pass, or ``(None, chunk bounds)``.
-
-    Three cases, in order: the array is already in the format the kernel
-    needs; a full dual has been pinned (explicitly, or cached below); or the
-    misaligned direction has to regroup, in which case the caller loops over
-    the returned chunk bounds.
-
-    The one case that caches without being asked is an array whose *whole*
-    regrouping already fits inside a single chunk's budget. Transposing it
-    per call would allocate exactly that much anyway, so keeping the result
-    costs no additional peak memory and saves every later call the work --
-    which matters, since repeated misaligned products against a cached dual
-    run far faster than re-regrouping each time.
-    """
+    """``(array, None)`` to run one major-aligned pass, or ``(None, chunk bounds)``."""
     arr = nview._arr
     if arr._format == needed_format:
         return arr, None
@@ -173,17 +136,14 @@ def _aligned_source(nview: _VCSNormalizedBase, needed_format: str):
         return nview._dual_arr, None
     bounds = _chunk_bounds(arr, _CHUNK_BUDGET_BYTES)
     if len(bounds) <= 1:
-        return pin_dual(nview), None
+        # Regrouping the whole array already fits the per-call budget, so
+        # keeping it costs no extra peak memory and saves every later call.
+        return _build_dual(nview), None
     return None, bounds
 
 
-def pin_dual(nview: _VCSNormalizedBase):
-    """Build and cache the opposite-format copy of ``nview``'s array, once.
-
-    Opt-in: it doubles the array's memory. Worth it only when many
-    misaligned-direction products will run against an array that fits
-    comfortably; otherwise the chunked path above needs no extra memory.
-    """
+def _build_dual(nview: _VCSNormalizedBase):
+    """Build and cache the opposite-format copy of ``nview``'s array, once."""
     if nview._dual_arr is None:
         nview._dual_arr = nview._arr._transpose_major()
     return nview._dual_arr
