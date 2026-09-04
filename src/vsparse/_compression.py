@@ -11,11 +11,17 @@ categoricals (category labels, ``obs``/``var`` string columns, the
 ``_index``). At least some HDF5 filter-plugin builds (seen in this
 environment: h5py 3.16 / HDF5 2.0.0 / hdf5plugin's Blosc2) segfault
 (``SIGFPE``) when the Blosc2 filter is applied to a variable-length-string
-dataset -- and there's no benefit to compressing already-tiny label arrays
-anyway. :func:`numeric_only_compression` patches the relevant
+dataset. :func:`numeric_only_compression` patches the relevant
 ``create_dataset``/``create_array`` calls for the duration of a write so
 string/object arrays always land uncompressed, regardless of what
 ``dataset_kwargs`` was passed in -- callers don't have to know about this.
+
+Strings are left uncompressed rather than given a different codec: gzip and
+lzf are safe on variable-length strings here, but the size problem is the
+per-row string itself, not its compression. Encoding low-cardinality
+columns as categoricals turns the per-row data numeric, which the existing
+Blosc2 path then compresses -- see
+:meth:`vsparse.VCSCAnnData.write_h5ad`'s ``convert_strings_to_categoricals``.
 """
 
 from __future__ import annotations
