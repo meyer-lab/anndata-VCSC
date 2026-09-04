@@ -1,12 +1,3 @@
-"""Windowing a normalized view vs. renormalizing a selection -- and why they differ.
-
-A normalized view's statistics are fixed at construction, over the whole
-array it wrapped. Indexing it is a window into *that* matrix; ``select``
-renormalizes the chosen sub-array on its own terms. Getting those two
-confused silently fits downstream analysis to the wrong data, so both
-contracts are pinned here, along with the size of the gap between them.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -43,12 +34,7 @@ def _reference(dense: np.ndarray) -> np.ndarray:
 
 
 def _mixed_population(seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
-    """Two cell types: different sequencing depth, different marker genes.
-
-    This is the shape of data the distinction actually matters for -- a
-    selection whose depth and expression profile both differ from the
-    population the view was built over.
-    """
+    """Two cell types differing in both sequencing depth and marker genes."""
     rng = np.random.default_rng(seed)
     n_cells, n_genes = 240, 80
     dense = np.empty((n_cells, n_genes))
@@ -69,7 +55,7 @@ def _relative_frobenius(got: np.ndarray, want: np.ndarray) -> float:
 
 
 def test_select_matches_normalizing_the_selection_directly(vcls):
-    """The correctness claim: select() == normalizing those cells on their own."""
+    """select() gives the same answer as normalizing those cells on their own."""
     dense, mask = _mixed_population()
     nv = vcls.from_scipy(_scipy_for(vcls, dense)).normalized()
 
@@ -81,12 +67,7 @@ def test_select_matches_normalizing_the_selection_directly(vcls):
 
 
 def test_select_equals_selecting_on_the_raw_array_first(vcls):
-    """select() is exactly the arr[sel].normalized() route, reachable from the view.
-
-    Since #23 the raw route stays VCS-native on both axes, so this is now a
-    direct comparison; ``select`` remains the discoverable spelling, and the
-    one that doesn't require reaching for the view's private ``_arr``.
-    """
+    """select() matches selecting on the raw array and normalizing after."""
     dense, mask = _mixed_population()
     arr = vcls.from_scipy(_scipy_for(vcls, dense))
 
@@ -101,7 +82,7 @@ def test_select_equals_selecting_on_the_raw_array_first(vcls):
 
 
 def test_select_returns_a_view_that_still_composes(vcls):
-    """Not a dense block: it keeps working with @ and toarray()."""
+    """The result is a view, so it still composes with @ and toarray()."""
     dense, mask = _mixed_population()
     nv = vcls.from_scipy(_scipy_for(vcls, dense)).normalized()
 
@@ -115,15 +96,16 @@ def test_select_returns_a_view_that_still_composes(vcls):
 
 
 def test_select_columns_and_both_axes(vcls):
+    """Two index arrays select a sub-block, not a pointwise diagonal."""
     dense, _ = _mixed_population()
     nv = vcls.from_scipy(_scipy_for(vcls, dense)).normalized()
-    cols = np.arange(0, dense.shape[1], 3)
+    rows = np.arange(0, dense.shape[0], 7)
+    cols = np.arange(0, dense.shape[1], 5)
+    assert rows.shape != cols.shape
 
     np.testing.assert_allclose(
         nv.select(cols=cols).toarray(), _reference(dense[:, cols]), atol=1e-10
     )
-
-    rows = np.arange(0, dense.shape[0], 5)
     np.testing.assert_allclose(
         nv.select(rows, cols).toarray(), _reference(dense[np.ix_(rows, cols)]), atol=1e-10
     )
@@ -140,7 +122,7 @@ def test_select_everything_is_the_whole_view(vcls, dense):
 
 
 def test_getitem_is_a_window_into_the_parent_matrix(vcls):
-    """Indexing == toarray()[key], without materializing the full matrix."""
+    """Indexing gives the same values as the fully materialized view."""
     dense, mask = _mixed_population()
     nv = vcls.from_scipy(_scipy_for(vcls, dense)).normalized()
 
@@ -150,14 +132,7 @@ def test_getitem_is_a_window_into_the_parent_matrix(vcls):
 
 
 def test_getitem_and_select_disagree_substantially_on_a_real_selection(vcls):
-    """The hazard, made explicit and measurable.
-
-    Reading ``view[cell_type]`` as "the normalized data for these cells" is
-    wrong by tens of percent -- large enough that any factorization fit to
-    it is fitting different data than the caller thinks. This test exists so
-    that the difference can't be quietly collapsed by a future change: if
-    these two ever agree, one of the two contracts has been broken.
-    """
+    """Windowing and renormalizing diverge by tens of percent on a real selection."""
     dense, mask = _mixed_population()
     nv = vcls.from_scipy(_scipy_for(vcls, dense)).normalized()
 
@@ -167,23 +142,3 @@ def test_getitem_and_select_disagree_substantially_on_a_real_selection(vcls):
 
     assert _relative_frobenius(renormalized, want) < 1e-12
     assert _relative_frobenius(windowed, want) > 0.1
-
-
-def test_select_survives_native_two_axis_indexing(vcls):
-    """#23 made both-axes selection VCS-native; select() must still get outer semantics.
-
-    A single ``arr[rows, cols]`` used to fall through to scipy, which
-    broadcasts two index arrays against each other pointwise. It now
-    composes a major- and a minor-axis selection instead, which is the
-    sub-block ``select`` needs -- worth pinning, since the difference is
-    silent and only shows up when both axes are arrays.
-    """
-    dense, _ = _mixed_population()
-    nv = vcls.from_scipy(_scipy_for(vcls, dense)).normalized()
-    rows = np.arange(0, dense.shape[0], 7)
-    cols = np.arange(0, dense.shape[1], 5)
-    assert rows.shape != cols.shape  # a pointwise broadcast would fail outright
-
-    np.testing.assert_allclose(
-        nv.select(rows, cols).toarray(), _reference(dense[np.ix_(rows, cols)]), atol=1e-10
-    )
