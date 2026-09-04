@@ -16,37 +16,12 @@ dataset. :func:`numeric_only_compression` patches the relevant
 string/object arrays always land uncompressed, regardless of what
 ``dataset_kwargs`` was passed in -- callers don't have to know about this.
 
-Why strings stay uncompressed, and what to do about size instead
-----------------------------------------------------------------
-
-The crash was re-checked against h5py 3.16.0 / HDF5 2.0.0 / hdf5plugin
-7.0.0 by writing a 20k-element variable-length string dataset under each
-available filter, one subprocess per filter:
-
-===========  ===========================================
-``none``     fine
-``gzip``     fine
-``lzf``      fine
-``blosc2``   dies with ``SIGFPE`` before returning
-===========  ===========================================
-
-So the workaround is still required, and it is specifically Blosc2 -- not
-HDF5 filters generally. gzip and lzf *would* be safe here, but neither is
-worth adopting: this codec choice only ever applies to the string arrays
-themselves, and the size problem those cause isn't a compression problem.
-A low-cardinality annotation stored as one variable-length string per row
-(cell type, sample ID, batch) pays for the string *and* its heap entry on
-every row, and vlen payloads live in HDF5's global heap where per-dataset
-compression doesn't reach them well in the first place.
-
-Encoding those columns as pandas categoricals fixes it at the source: the
-per-row data becomes an integer code array -- numeric, so the existing
-Blosc2 path compresses it -- and the labels are stored once. Measured on
-200k cells x 2k genes with three low-cardinality string ``obs`` columns,
-that takes the whole file from **41.82 MB to 13.61 MB**. This is why
-:meth:`vsparse.VCSCAnnData.write_h5ad` converts them by default (its
-``convert_strings_to_categoricals`` parameter, matching anndata's own
-writers), and it is a bigger win than any string codec could be.
+Strings are left uncompressed rather than given a different codec: gzip and
+lzf are safe on variable-length strings here, but the size problem is the
+per-row string itself, not its compression. Encoding low-cardinality
+columns as categoricals turns the per-row data numeric, which the existing
+Blosc2 path then compresses -- see
+:meth:`vsparse.VCSCAnnData.write_h5ad`'s ``convert_strings_to_categoricals``.
 """
 
 from __future__ import annotations

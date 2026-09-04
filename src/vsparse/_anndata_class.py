@@ -251,12 +251,8 @@ class VCSCAnnData(ad.AnnData):
         if format not in _STORE_FORMATS:
             raise ValueError(f"format must be one of {_STORE_FORMATS}, got {format!r}")
         if convert_strings_to_categoricals:
-            # anndata's own write_h5ad/write_zarr do this (same parameter, same
-            # default); writing field-by-field means we have to do it too, or
-            # low-cardinality obs/var columns land as one variable-length
-            # string per row. That costs several times the whole file --
-            # they're also the one thing here that can't be Blosc-compressed
-            # (see vsparse._compression), so nothing downstream recovers it.
+            # Writing field-by-field skips what anndata's own writers do here,
+            # leaving low-cardinality columns as one string per row.
             self.strings_to_categoricals()
         write_array = ad.io.write_elem if format == "vcsc" else _io.write_ivcs_elem
         if self._vcs_X is not None:
@@ -302,14 +298,9 @@ class VCSCAnnData(ad.AnnData):
             come back from :meth:`read_h5ad` as ordinary VCSCArray/VCSRArray
             objects -- ``"ivcsc"`` is purely an on-disk storage format.
         convert_strings_to_categoricals
-            Convert ``obs``/``var`` string columns to categorical before
-            writing, in place, exactly as ``anndata``'s own writers do (same
-            name, same default). Only columns with fewer categories than rows
-            are converted, so it never makes a column larger -- and for the
-            typical low-cardinality annotation (cell type, sample ID) it is
-            worth several times the size of the whole file, because
-            variable-length strings are the one thing here that can't be
-            compressed (see :mod:`vsparse._compression`).
+            Convert ``obs``/``var`` string columns to categorical in place
+            before writing, as ``anndata``'s own writers do. Only columns
+            with fewer categories than rows are converted.
         dataset_kwargs
             Passed to ``h5py.Group.create_dataset`` for every array written.
             Defaults to Blosc2+LZ4 compression; pass ``{}`` to store

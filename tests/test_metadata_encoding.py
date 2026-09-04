@@ -1,10 +1,3 @@
-"""obs/var string columns are categorical-encoded on write, as anndata's writers do.
-
-Variable-length strings are the one thing the write path can't compress
-(Blosc2 crashes on them -- see vsparse._compression), so a low-cardinality
-annotation stored one string per row is pure, unrecoverable file size.
-"""
-
 from __future__ import annotations
 
 import anndata as ad
@@ -83,7 +76,7 @@ def test_conversion_can_be_turned_off(tmp_path):
 
 
 def test_categorical_encoding_shrinks_the_file(tmp_path):
-    """The size claim, on the shape of annotation that actually appears in practice."""
+    """Categorical codes compress where per-row strings cannot."""
     va_plain = VCSCAnnData.from_anndata(_adata(n_cells=4000), format="csr")
     va_cat = VCSCAnnData.from_anndata(_adata(n_cells=4000), format="csr")
 
@@ -96,7 +89,7 @@ def test_categorical_encoding_shrinks_the_file(tmp_path):
 
 
 def test_high_cardinality_columns_are_left_alone(tmp_path):
-    """A column with a distinct value per row gains nothing and is not converted."""
+    """A column with a distinct value per row is left alone."""
     adata = _adata(n_cells=100)
     adata.obs["barcode"] = [f"barcode_{i}" for i in range(adata.n_obs)]
     va = VCSCAnnData.from_anndata(adata, format="csr")
