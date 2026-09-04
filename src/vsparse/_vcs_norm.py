@@ -29,11 +29,10 @@ class _VCSNormalizedBase(NormalizedViewBase):
 
     def __init__(self, arr: _VCSBase) -> None:
         super().__init__(arr)
-        # Lazily built, cached opposite-format copy of `arr` -- see
-        # vsparse._vcs_matmul._get_dual. Built at most once per view, the
-        # first time a matmul needs it in the direction `arr` isn't
-        # major-aligned for.
+        # Opposite-format copy of `arr`, cached by vsparse._vcs_matmul when
+        # regrouping the whole array fits one chunk's budget.
         self._dual_arr: _VCSBase | None = None
+
 
     def __matmul__(self, other: Any) -> Any:
         """``self @ other`` for a dense ``other`` -- see :mod:`vsparse._vcs_matmul`."""

@@ -174,8 +174,8 @@ def test_all_zero_matrix_does_not_crash(vcls):
     np.testing.assert_allclose(nv.toarray(), np.zeros((5, 4)))
 
 
-def test_dual_array_is_built_lazily_and_cached(dense, vcls):
-    """The opposite-format dual is only built on the first misaligned-direction matmul, then reused."""
+def test_small_array_dual_is_cached_lazily(dense, vcls):
+    """An array whose whole regrouping fits one chunk is transposed once and kept."""
     if dense.sum() == 0:
         pytest.skip("all-zero matrix: median row total is 0")
     v = vcls.from_scipy(_scipy_for(vcls, dense))
@@ -185,8 +185,8 @@ def test_dual_array_is_built_lazily_and_cached(dense, vcls):
     rng = np.random.default_rng(12)
     B = rng.normal(size=(dense.shape[1], 3))
     Bl = rng.normal(size=(3, dense.shape[0]))
-    nv @ B  # major-aligned for VCSR self@B; builds the dual for VCSC self@B
-    Bl @ nv  # major-aligned for VCSC B@self; builds the dual for VCSR B@self
+    nv @ B  # major-aligned for VCSR self@B; misaligned for VCSC
+    Bl @ nv  # major-aligned for VCSC B@self; misaligned for VCSR
 
     dual_after_matmul = nv._dual_arr
     assert dual_after_matmul is not None
@@ -194,8 +194,7 @@ def test_dual_array_is_built_lazily_and_cached(dense, vcls):
 
     nv @ B
     Bl @ nv
-    # same object reused, not rebuilt, across repeated calls
-    assert nv._dual_arr is dual_after_matmul
+    assert nv._dual_arr is dual_after_matmul  # reused, not rebuilt
 
 
 def test_transpose_major_roundtrip(dense, vcls):

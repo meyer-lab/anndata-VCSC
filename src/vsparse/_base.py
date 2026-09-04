@@ -20,6 +20,7 @@ import scipy.sparse as sp
 from vsparse import _construct, _ops
 from vsparse._indexutils import is_full_slice as _is_full_slice
 from vsparse._indexutils import normalize_major_idx as _normalize_major_idx
+from vsparse._indexutils import smallest_index_dtype as _smallest_index_dtype
 
 __all__ = ["VCSCArray", "VCSRArray"]
 
@@ -66,6 +67,12 @@ class _VCSBase:
             raise ValueError("value_ptr[-1] must equal len(indices)")
         if indices.shape[0] and (indices.min() < 0 or indices.max() >= n_minor):
             raise ValueError("indices out of bounds for the given shape")
+
+        # Narrow after the bounds check above, so an out-of-range index is
+        # rejected rather than silently truncated by the cast.
+        idx_dtype = _smallest_index_dtype(n_minor)
+        if idx_dtype.itemsize < indices.dtype.itemsize:
+            indices = indices.astype(idx_dtype, copy=False)
 
         self.shape = (int(shape[0]), int(shape[1]))
         self.major_ptr = major_ptr
@@ -124,9 +131,9 @@ class _VCSBase:
     def from_scipy(cls, mat) -> _VCSBase:
         """Build from any scipy sparse array/matrix (converted internally)."""
         mat = mat.tocsc() if cls._format == "csc" else mat.tocsr()
-        n_major, _n_minor = cls._swap(mat.shape)
+        n_major, n_minor = cls._swap(mat.shape)
         major_ptr, values, value_ptr, indices = _construct.compress(
-            mat.indptr, mat.indices, mat.data, n_major
+            mat.indptr, mat.indices, mat.data, n_major, n_minor
         )
         return cls(mat.shape, major_ptr, values, value_ptr, indices)
 
@@ -516,34 +523,60 @@ class _VCSBase:
         )
         return type(self)(new_shape, new_major_ptr, new_values, new_value_ptr, new_indices)
 
+    def _major_range(self, start: int, stop: int) -> _VCSBase:
+        """The contiguous major-slice range ``[start, stop)``, without copying values.
+
+        ``values``/``indices`` come back as views; only the two pointer
+        arrays are rebuilt, rebased to the new start.
+        """
+        u0, u1 = int(self.major_ptr[start]), int(self.major_ptr[stop])
+        k0, k1 = int(self.value_ptr[u0]), int(self.value_ptr[u1])
+        n_sel = stop - start
+        new_shape = (
+            (self.n_minor, n_sel) if self._format == "csc" else (n_sel, self.n_minor)
+        )
+        return type(self)(
+            new_shape,
+            self.major_ptr[start : stop + 1] - u0,
+            self.values[u0:u1],
+            self.value_ptr[u0 : u1 + 1] - k0,
+            self.indices[k0:k1],
+        )
+
     def _select_minor(self, key: Any) -> _VCSBase:
         """Select along the minor axis (rows for VCSC, columns for VCSR).
 
-        Unlike :meth:`_select_major`, the kept elements aren't already
-        contiguous per major slice, so this filters/remaps ``indices`` and
-        drops any (major, unique-value) slot that no longer has any kept
-        index, shrinking ``major_ptr``/``value_ptr`` accordingly.
+        A key may name the same index more than once, so this is a fan-out
+        rather than a remap and one stored element can appear in several
+        output positions.
         """
         idx = _normalize_major_idx(key, self.n_minor)
         n_minor_new = idx.shape[0]
 
-        remap = np.full(self.n_minor, -1, dtype=np.int64)
-        remap[idx] = np.arange(n_minor_new, dtype=np.int64)
+        # Output positions grouped by the original index they came from.
+        fanout = np.bincount(idx, minlength=self.n_minor)
+        offsets = np.zeros(self.n_minor + 1, dtype=np.int64)
+        np.cumsum(fanout, out=offsets[1:])
+        positions = np.argsort(idx, kind="stable").astype(np.int64, copy=False)
 
-        keep = remap[self.indices] >= 0
-        new_indices = remap[self.indices[keep]].astype(self.indices.dtype, copy=False)
+        slot_counts = _ops.minor_select_counts(self.value_ptr, self.indices, fanout)
+        kept_slots = np.flatnonzero(slot_counts)
 
-        n_unique = self.values.shape[0]
-        value_slot_of_index = np.repeat(np.arange(n_unique, dtype=np.int64), np.diff(self.value_ptr))
-        kept_per_slot = np.bincount(value_slot_of_index[keep], minlength=n_unique)
-        surviving = kept_per_slot > 0
+        new_values = self.values[kept_slots]
+        new_value_ptr = np.zeros(kept_slots.shape[0] + 1, dtype=np.int64)
+        np.cumsum(slot_counts[kept_slots], out=new_value_ptr[1:])
 
-        new_values = self.values[surviving]
-        new_value_ptr = np.zeros(int(surviving.sum()) + 1, dtype=np.int64)
-        np.cumsum(kept_per_slot[surviving], out=new_value_ptr[1:])
+        # Keep the parent's index dtype, as every other structural op does.
+        new_indices = np.empty(int(new_value_ptr[-1]), dtype=self.indices.dtype)
+        _ops.minor_select_fill(
+            self.value_ptr, self.indices, offsets, positions,
+            kept_slots, new_value_ptr, new_indices,
+        )
 
-        group_of_major = np.repeat(np.arange(self.n_major, dtype=np.int64), np.diff(self.major_ptr))
-        major_counts = np.bincount(group_of_major[surviving], minlength=self.n_major)
+        # Slots keep their original order, so each major slice owns a
+        # contiguous run of them.
+        major_of_slot = np.searchsorted(self.major_ptr, kept_slots, side="right") - 1
+        major_counts = np.bincount(major_of_slot, minlength=self.n_major)
         new_major_ptr = np.zeros(self.n_major + 1, dtype=np.int64)
         np.cumsum(major_counts, out=new_major_ptr[1:])
 

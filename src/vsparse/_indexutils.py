@@ -6,7 +6,14 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["is_full_slice", "normalize_major_idx"]
+__all__ = ["is_full_slice", "normalize_major_idx", "smallest_index_dtype"]
+
+_INT32_MAX = np.iinfo(np.int32).max
+
+
+def smallest_index_dtype(n: int) -> np.dtype:
+    """Narrowest signed integer dtype that can address an axis of length ``n``."""
+    return np.dtype(np.int32) if n <= _INT32_MAX else np.dtype(np.int64)
 
 
 def is_full_slice(key: Any) -> bool:

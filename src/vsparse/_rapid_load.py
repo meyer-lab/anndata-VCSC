@@ -61,6 +61,7 @@ from scipy.sparse import csr_array
 
 from vsparse import _ivcsc
 from vsparse._anndata_class import VCSCAnnData
+from vsparse._indexutils import smallest_index_dtype
 from vsparse._ops import accumulator_threads
 
 if TYPE_CHECKING:
@@ -160,7 +161,7 @@ def _build_selected_rows(
     full_indptr = value_ptr[major_ptr]
     row_nnz = np.diff(full_indptr)[row_mask]
     nnz = int(row_nnz.sum())
-    ptr_dtype = np.int64 if nnz > np.iinfo(np.int32).max else np.int32
+    ptr_dtype = smallest_index_dtype(nnz)
 
     indptr = np.zeros(row_nnz.shape[0] + 1, dtype=ptr_dtype)
     np.cumsum(row_nnz, out=indptr[1:])
@@ -257,18 +258,22 @@ def _filter_and_compact(
     gene_mask: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     kept_rows = np.nonzero(cell_mask)[0]
-    gene_remap = (np.cumsum(gene_mask) - 1).astype(np.int32)
-    gene_remap[~gene_mask] = -1
     n_kept_genes = int(gene_mask.sum())
+    gene_remap = (np.cumsum(gene_mask) - 1).astype(smallest_index_dtype(n_kept_genes))
+    gene_remap[~gene_mask] = -1
 
-    idx_dtype = np.int64 if indices.shape[0] > np.iinfo(np.int32).max else np.int32
-    counts = np.empty(kept_rows.shape[0], dtype=idx_dtype)
+    # ``new_indptr`` is indexed by nonzero count and needs int64 once nnz
+    # passes INT32_MAX; ``out_indices`` holds gene indices and never does.
+    ptr_dtype = smallest_index_dtype(int(indices.shape[0]))
+    col_dtype = smallest_index_dtype(n_kept_genes)
+
+    counts = np.empty(kept_rows.shape[0], dtype=ptr_dtype)
     _count_kept(row_indptr, indices, gene_mask, kept_rows, counts)
-    new_indptr = np.zeros(kept_rows.shape[0] + 1, dtype=idx_dtype)
+    new_indptr = np.zeros(kept_rows.shape[0] + 1, dtype=ptr_dtype)
     np.cumsum(counts, out=new_indptr[1:])
 
     nnz_filtered = int(new_indptr[-1])
-    out_indices = np.empty(nnz_filtered, dtype=idx_dtype)
+    out_indices = np.empty(nnz_filtered, dtype=col_dtype)
     out_data = np.empty(nnz_filtered, dtype=np.float32)
     _fill_kept(row_indptr, indices, data, gene_remap, kept_rows, new_indptr, out_indices, out_data)
 
