@@ -9,6 +9,10 @@ value, so a real materialization is an ``n_rows * n_cols`` dense array; the
 whole point of a "view" here is to avoid paying for that until (and unless)
 the caller actually asks for it.
 
+Statistics are computed once, at construction, over the whole wrapped
+array. Indexing a view windows that matrix and keeps those statistics;
+:meth:`~NormalizedViewBase.select` renormalizes a subset on its own terms.
+
 What's precomputed, once, at construction:
 
 - ``row_scale``: per-row (cell) total raw counts, scaled to a median of 1 --
@@ -252,16 +256,29 @@ class NormalizedViewBase:
             )
         return out
 
+    # -- selection ---------------------------------------------------------------
+
+    def select(self, rows: Any = slice(None), cols: Any = slice(None)) -> Any:
+        """A normalized view of the selected sub-array, with statistics recomputed for it.
+
+        Returns a view, not a dense array, so it still composes with
+        ``@``/:meth:`toarray`.
+        """
+        # A column selection re-derives read depth from only the selected
+        # columns, which is rarely what a caller wants; select genes first
+        # and normalize after if it matters.
+        sub: Any = self._arr[_prep_key(rows), _prep_key(cols)]
+        if not isinstance(sub, type(self._arr)):
+            sub = type(self._arr).from_scipy(sub)
+        return type(self)(sub)
+
     # -- on-the-fly elementwise access ------------------------------------------
 
     def __getitem__(self, key: Any) -> np.ndarray:
-        """Compute just the requested sub-block, on the fly, from the raw data.
+        """``toarray()[key]``, computed on the fly without materializing the full matrix.
 
-        Only the raw counts for the requested rows/columns are ever
-        decompressed (via the underlying array's own indexing, which stays
-        compact for a major-axis-only slice); the transform/centering
-        formula is then applied to that small block directly, using the
-        precomputed per-row/per-column statistics -- never the full matrix.
+        Applies this view's statistics, so it is not the same as normalizing
+        the selected sub-matrix; use :meth:`select` for that.
         """
         if isinstance(key, tuple):
             if len(key) != 2:
