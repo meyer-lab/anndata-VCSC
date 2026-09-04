@@ -227,10 +227,11 @@ class _VCSBase:
         return np.bincount(group_of_major, weights=weighted, minlength=self.n_major)
 
     def _minor_sums(self) -> np.ndarray:
-        """Per-minor-index totals -- a scatter-add over every nonzero."""
-        group_sizes = np.diff(self.value_ptr)
-        expanded = np.repeat(self.values.astype(np.float64), group_sizes)
-        return np.bincount(self.indices, weights=expanded, minlength=self.n_minor)
+        """A parallel scatter-add over every nonzero to get per-minor-index totals."""
+        return _ops.minor_sums(
+            self.values, self.value_ptr, self.indices, self.n_minor,
+            _ops.accumulator_threads(self.n_minor),
+        )
 
     def sum(self, axis: int | None = None) -> np.ndarray | float:
         """Sum of (structural) values along ``axis`` (0=rows, 1=columns), or overall if ``None``."""
@@ -252,8 +253,11 @@ class _VCSBase:
         )
 
     def _minor_nnz(self) -> np.ndarray:
-        """Per-minor-index stored-element counts -- a scatter-add over every nonzero."""
-        return np.bincount(self.indices, minlength=self.n_minor).astype(np.int64)
+        """A parallel scatter over every nonzero to get per-minor-index counts."""
+        return _ops.minor_counts(
+            self.value_ptr, self.indices, self.n_minor,
+            _ops.accumulator_threads(self.n_minor),
+        )
 
     def getnnz(self, axis: int | None = None) -> np.ndarray | int:
         """Count of stored elements along ``axis``, or overall if ``None``."""
@@ -298,11 +302,11 @@ class _VCSBase:
 
     def _minor_reduce(self, ufunc: np.ufunc, initial: Any) -> np.ndarray:
         """Per-minor-index max/min, accounting for implicit zeros in sparse slices."""
-        group_sizes = np.diff(self.value_ptr)
-        expanded = np.repeat(self.values, group_sizes)
-        out = np.full(self.n_minor, initial, dtype=self.values.dtype)
-        ufunc.at(out, self.indices, expanded)
-        counts = np.bincount(self.indices, minlength=self.n_minor)
+        out, counts = _ops.minor_extrema(
+            self.values, self.value_ptr, self.indices, self.n_minor, initial, ufunc is np.maximum
+        )
+        # A minor index missing from some major slice has a structural zero
+        # competing in the reduction.
         not_dense = counts < self.n_major
         out[not_dense] = ufunc(out[not_dense], 0)
         return out

@@ -6,13 +6,30 @@ import numba
 import numpy as np
 
 __all__ = [
+    "accumulator_threads",
     "major_matmat",
     "major_matvec",
+    "minor_counts",
+    "minor_extrema",
     "minor_matmat",
     "minor_matvec",
     "minor_select_counts",
     "minor_select_fill",
+    "minor_sums",
 ]
+
+# Thread-local accumulators for the minor-axis scatters below cost
+# ``nthreads * n_minor * bytes_per_element``. The thread count is capped to
+# keep that block under this budget.
+_ACCUMULATOR_BUDGET_BYTES = 64 << 20  # 64 MiB
+
+
+def accumulator_threads(n_minor: int, bytes_per_element: int = 8) -> int:
+    """Threads to run a minor-axis scatter with, capped by accumulator size."""
+    if n_minor <= 0:
+        return 1
+    affordable = max(1, _ACCUMULATOR_BUDGET_BYTES // (n_minor * max(1, bytes_per_element)))
+    return int(min(numba.get_num_threads(), affordable))
 
 
 @numba.njit(cache=True)
@@ -80,6 +97,76 @@ def _minor_matmat(major_ptr, values, value_ptr, indices, b, n_major):
                 for c in range(k):
                     y[c, j] += val * b[c, col]
     return y
+
+
+@numba.njit(cache=True, parallel=True)
+def minor_sums(values, value_ptr, indices, n_minor, nthreads):
+    n_groups = values.shape[0]
+    chunk = (n_groups + nthreads - 1) // nthreads
+    partial = np.zeros((nthreads, n_minor), dtype=np.float64)
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
+        start = t * chunk
+        end = min(n_groups, start + chunk)
+        local = partial[t]
+        for u in range(start, end):
+            v = np.float64(values[u])
+            for k in range(value_ptr[u], value_ptr[u + 1]):
+                local[indices[k]] += v
+    return partial.sum(axis=0)
+
+
+@numba.njit(cache=True, parallel=True)
+def _minor_extrema_kernel(values, value_ptr, indices, n_minor, nthreads, initial, is_max):
+    # The count comes along for free and tells the caller which minor indices
+    # have an implicit zero to fold in.
+    n_groups = values.shape[0]
+    chunk = (n_groups + nthreads - 1) // nthreads
+    part_val = np.full((nthreads, n_minor), initial, dtype=values.dtype)
+    part_cnt = np.zeros((nthreads, n_minor), dtype=np.int64)
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
+        start = t * chunk
+        end = min(n_groups, start + chunk)
+        local_val = part_val[t]
+        local_cnt = part_cnt[t]
+        for u in range(start, end):
+            v = values[u]
+            for k in range(value_ptr[u], value_ptr[u + 1]):
+                idx = indices[k]
+                local_cnt[idx] += 1
+                if is_max:
+                    if v > local_val[idx]:
+                        local_val[idx] = v
+                else:
+                    if v < local_val[idx]:
+                        local_val[idx] = v
+    return part_val, part_cnt
+
+
+def minor_extrema(values, value_ptr, indices, n_minor, initial, is_max):
+    """Extremum over the stored values, and the stored count, per minor index."""
+    nthreads = accumulator_threads(n_minor, values.dtype.itemsize + 8)
+    part_val, part_cnt = _minor_extrema_kernel(
+        values, value_ptr, indices, n_minor, nthreads, initial, is_max
+    )
+    extrema = part_val.max(axis=0) if is_max else part_val.min(axis=0)
+    return extrema, part_cnt.sum(axis=0)
+
+
+@numba.njit(cache=True, parallel=True)
+def minor_counts(value_ptr, indices, n_minor, nthreads):
+    n_groups = value_ptr.shape[0] - 1
+    chunk = (n_groups + nthreads - 1) // nthreads
+    partial = np.zeros((nthreads, n_minor), dtype=np.int64)
+    for t in numba.prange(nthreads):  # ty: ignore[not-iterable]
+        start = t * chunk
+        end = min(n_groups, start + chunk)
+        local = partial[t]
+        for u in range(start, end):
+            for k in range(value_ptr[u], value_ptr[u + 1]):
+                local[indices[k]] += 1
+    return partial.sum(axis=0)
+
+
 
 
 def major_matvec(major_ptr, values, value_ptr, indices, x, n_major, n_minor):
