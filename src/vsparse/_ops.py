@@ -5,7 +5,14 @@ from __future__ import annotations
 import numba
 import numpy as np
 
-__all__ = ["major_matmat", "major_matvec", "minor_matmat", "minor_matvec"]
+__all__ = [
+    "major_matmat",
+    "major_matvec",
+    "minor_matmat",
+    "minor_matvec",
+    "minor_select_counts",
+    "minor_select_fill",
+]
 
 
 @numba.njit(cache=True)
@@ -91,3 +98,46 @@ def major_matmat(major_ptr, values, value_ptr, indices, b, n_major, n_minor):
 def minor_matmat(major_ptr, values, value_ptr, indices, b, n_major):
     b = np.ascontiguousarray(b)
     return _minor_matmat(major_ptr, values, value_ptr, indices, b, n_major)
+
+
+# -- minor-axis selection ----------------------------------------------------
+
+
+@numba.njit(cache=True, parallel=True)
+def _minor_select_counts(value_ptr, indices, fanout, out_counts):
+    # A selection may name one index several times, so each stored element
+    # contributes ``fanout`` output entries rather than one.
+    n_slots = value_ptr.shape[0] - 1
+    for u in numba.prange(n_slots):  # ty: ignore[not-iterable]
+        c = 0
+        for k in range(value_ptr[u], value_ptr[u + 1]):
+            c += fanout[indices[k]]
+        out_counts[u] = c
+
+
+@numba.njit(cache=True, parallel=True)
+def _minor_select_fill(
+    value_ptr, indices, offsets, positions, kept_slots, new_value_ptr, out_indices
+):
+    for s in numba.prange(kept_slots.shape[0]):  # ty: ignore[not-iterable]
+        u = kept_slots[s]
+        pos = new_value_ptr[s]  # each slot fills a disjoint range
+        for k in range(value_ptr[u], value_ptr[u + 1]):
+            o = indices[k]
+            for j in range(offsets[o], offsets[o + 1]):  # every destination of o
+                out_indices[pos] = positions[j]
+                pos += 1
+
+
+def minor_select_counts(value_ptr, indices, fanout):
+    """Output element count per stored (major, value) slot."""
+    counts = np.empty(value_ptr.shape[0] - 1, dtype=np.int64)
+    _minor_select_counts(value_ptr, indices, fanout, counts)
+    return counts
+
+
+def minor_select_fill(value_ptr, indices, offsets, positions, kept_slots, new_value_ptr, out_indices):
+    """Write the remapped minor indices for the surviving slots, in place."""
+    _minor_select_fill(
+        value_ptr, indices, offsets, positions, kept_slots, new_value_ptr, out_indices
+    )
