@@ -7,6 +7,15 @@ authors = [
     { name = "Aaron Meyer", email = "git@ameyer.me" }
 ]
 requires-python = ">=3.12"
+license = "MIT"
+keywords = ["anndata", "single-cell", "sparse", "compression"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "numpy>=2.0",
     "scipy>=1.12",
@@ -14,6 +23,12 @@ dependencies = [
     "anndata>=0.13",
     "hdf5plugin>=4.0",
 ]
+
+[project.urls]
+Homepage = "https://meyer-lab.github.io/vsparse/"
+Repository = "https://github.com/meyer-lab/vsparse"
+Documentation = "https://meyer-lab.github.io/vsparse/"
+Issues = "https://github.com/meyer-lab/vsparse/issues"
 
 [project.optional-dependencies]
 docs = [
